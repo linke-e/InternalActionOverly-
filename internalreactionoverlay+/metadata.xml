@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+    <name>InternalReactionOverlay+</name>
+    <directory>internalreactionoverlay+</directory>
+    <id>3786174946</id>
+    <description>基于内置反应桌宠InternalReactionOverlay模组改进而来
+  可以让桌宠根据游戏内的事件播放动画了
+  目前已有事件：进入BOSS房、受到伤害、角色半血、发现不同等级道具（需要ReactionAPI）、使用主动/副主动道具等
+  可以通过替换png图片帧的方式替换桌宠动画,内置一套可选的超天酱素材
+  详情见README.md
+
+---
+
+حيوان سطح المكتب التفاعلي المدمج +InternalReactionOverlay+ نسخة محسّنة من مود حيوان سطح المكتب التفاعلي المدمج 
+يتيح لحيوان سطح المكتب تشغيل الرسوم المتحركة وفقًا للأحداث داخل اللعبة.
+الأحداث المتوفرة حاليًا: دخول غرفة البوس، تلقي ضرر من فخ، وصول الشخصية إلى نصف صحتها، العثور على عناصر من مستويات مختلفة (يتطلب ReactionAPI)، وغيرها.
+يمكن استبدال رسوم حيوان سطح المكتب المتحركة عن طريق استبدال إطارات صور PNG.
+التفاصيل في README.md</description>
+    <version>1.1</version>
+    <visibility>Public</visibility>
+    <tag id="Lua"/>
+    <tag id="Graphics"/>
+</metadata>

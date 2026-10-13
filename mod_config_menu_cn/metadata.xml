@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+    <name>!!Mod Config Menu Chinese</name>
+    <directory>mod_config_menu_cn</directory>
+    <id>2494192799</id>
+    <description>这是Mod Config Menu的中文版本（中文字体+翻译api支持）
+This is the Chinese version of Mod Config Menu.
+If you don't speak Chinese, don't use it. [strike]No new features will be added to this mod, but [/strike]if someone else maintains the original version of MCM, I may follow in to ensure compatibility.
+
+Chinese font support is added.
+The translation API is added to the original logic.
+
+Original mod link (thanks to the original author piber):
+https://steamcommunity.com/sharedfiles/filedetails/?id=1603631350
+
+I'm not the original author. Sorry but I don't have enough time to maintain the functions. Please don't ask anything other than the Chinese version here.</description>
+    <version>1.12</version>
+    <visibility>Public</visibility>
+    <tag id="Lua"/>
+</metadata>
