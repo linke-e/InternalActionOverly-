@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 gen_anim.py —— 重建动画帧清单 internalreactionoverlay_frames.lua
-               （集成 256×256 自动缩放，原 resize_256.py 功能）
+               （集成 256×256 自动缩放，原 resize_256.py 功能；多角色素材池版）
 ====================================================================================
 
 功能:
-  1. 扫描 resources/gfx/overlay_anim/ 下所有子文件夹的 PNG 帧 + 根目录单帧 PNG
+  1. 扫描角色素材池 resources/gfx/pets/ —— 【一个角色一个文件夹】，最多 MAX_PETS(5) 个:
+       pets/<角色名>/main.png            根目录单帧 PNG（main.png -> main_static）
+       pets/<角色名>/<动画键>/*.png      每个动画一个子文件夹，每帧一张 PNG
   2. 【自动缩放】检测到非 256×256 的 PNG 帧时，原位缩放【覆盖】原文件
      (交互运行：按 y/回车 即缩放，n 跳过；脚本/非交互运行自动缩放)
   3. 过滤 Discord 附件重复帧（文件名带 " #数字" 后缀，如 "xxx_000 #50548.png"）
-  4. 重新生成 internalreactionoverlay_frames.lua
+  4. 重新生成 internalreactionoverlay_frames.lua（新格式：pets 角色名列表 + frames 按角色嵌套）
+  5. 兼容回退：若无 pets/ 目录但有旧版 overlay_anim/ 目录，按旧格式（单角色）生成
 
 用法 (PowerShell):
   本脚本应放在模组根目录（与 main.lua 同级）。模组目录名含空格，
@@ -30,6 +33,11 @@ gen_anim.py —— 重建动画帧清单 internalreactionoverlay_frames.lua
     --size   目标边长 (默认 256)
     --yes    检测到非目标尺寸时自动缩放, 不询问 (脚本/自动化用)
 
+新增角色:
+  在 resources/gfx/pets/ 下新建文件夹（角色名建议只用英文字母/数字/下划线，
+  以撒资源路径对中文/空格支持差），放入 main.png、main_sad.png 与各动画子文件夹，
+  重新运行本脚本即可。最多 5 个角色，超出的会被跳过并警告。
+
 依赖: Pillow (仅缩放功能需要; 未安装时自动跳过缩放并警告, 帧清单照常生成)
       安装: pip install pillow
 """
@@ -49,13 +57,21 @@ if HAVE_PIL:
 # Discord 附件重复帧后缀：如 "stream_cho_grgr_000 #50548.png"
 DISCORD_SUFFIX = re.compile(r"\s+#\d+")
 
+# 角色素材池：目录与约束
+PETS_DIR_REL = os.path.join("resources", "gfx", "pets")
+LEGACY_ANIM_DIR_REL = os.path.join("resources", "gfx", "overlay_anim")
+MAX_PETS = 5
+# 以撒资源加载对非 ASCII/特殊字符路径支持差，角色名（文件夹名）限制为安全字符
+PET_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
 
 def find_mod_root(start):
-    """从 start 开始向上查找 mod 根目录（含 main.lua 与 resources/gfx/overlay_anim）。"""
+    """从 start 开始向上查找 mod 根目录（含 main.lua 与角色素材池或旧动画目录）。"""
     d = os.path.abspath(start)
     while True:
-        if (os.path.isfile(os.path.join(d, "main.lua"))
-                and os.path.isdir(os.path.join(d, "resources", "gfx", "overlay_anim"))):
+        has_pets = os.path.isdir(os.path.join(d, PETS_DIR_REL))
+        has_legacy = os.path.isdir(os.path.join(d, LEGACY_ANIM_DIR_REL))
+        if os.path.isfile(os.path.join(d, "main.lua")) and (has_pets or has_legacy):
             return d
         parent = os.path.dirname(d)
         if parent == d:
@@ -121,29 +137,73 @@ def resize_square(img, size, mode):
     raise ValueError('未知模式: %s' % mode)
 
 
-def collect_frames(root):
-    """扫描全部动画帧，返回 [(动画键, 资源相对路径, 绝对路径)]，已去重 Discord 重复帧。"""
-    ANIM = os.path.join(root, "resources", "gfx", "overlay_anim")
+def collect_pet_frames(pet_dir, rel_prefix):
+    """扫描单个角色文件夹，返回 [(动画键, 资源相对路径, 绝对路径)]。
+
+    根目录单帧 PNG：main.png -> main_static、death.png -> death_static，其余 <name>.png -> <name>
+    子文件夹：文件夹名即动画键（voice_training -> activity 旧目录名兼容）。
+    rel_prefix 形如 "gfx/pets/Angle"。
+    """
     KEY_MAP = {"voice_training": "activity"}  # 旧目录名兼容
     ROOT_KEY_MAP = {"main.png": "main_static", "death.png": "death_static"}
 
     frames = []
     # 根目录独立 PNG（单帧动画）：main.png -> main_static；其余 <name>.png -> <name>
-    for fn in sorted(os.listdir(ANIM)):
-        full = os.path.join(ANIM, fn)
-        if os.path.isfile(full) and fn.lower().endswith(".png"):
-            key = ROOT_KEY_MAP.get(fn.lower(), os.path.splitext(fn)[0])
-            frames.append((key, "gfx/overlay_anim/" + fn, full))
-    # 子文件夹：每帧一张 PNG
-    for d in sorted(os.listdir(ANIM)):
-        full = os.path.join(ANIM, d)
+    # 先过 Discord 重复帧过滤与键名安全校验（键会成为 Lua 表键 + 以撒资源路径段）
+    root_pngs = clean_png_list(
+        f for f in sorted(os.listdir(pet_dir))
+        if os.path.isfile(os.path.join(pet_dir, f)) and f.lower().endswith(".png"))
+    pet_name = os.path.basename(os.path.normpath(pet_dir))
+    for fn in root_pngs:
+        key = ROOT_KEY_MAP.get(fn.lower(), os.path.splitext(fn)[0])
+        if not PET_NAME_RE.match(key):
+            print("[!] 角色「%s」根目录 PNG「%s」生成的动画键不安全，已跳过"
+                  "（键名限英文字母/数字/下划线）" % (pet_name, fn))
+            continue
+        frames.append((key, rel_prefix + "/" + fn, os.path.join(pet_dir, fn)))
+    # 子文件夹：每帧一张 PNG；文件夹名即动画键，同样要求安全字符
+    for d in sorted(os.listdir(pet_dir)):
+        full = os.path.join(pet_dir, d)
         if not os.path.isdir(full):
             continue
         key = KEY_MAP.get(d, d)
+        if not PET_NAME_RE.match(key):
+            print("[!] 角色「%s」动画文件夹「%s」名不安全，已跳过"
+                  "（键名限英文字母/数字/下划线，游戏资源路径限制）" % (pet_name, d))
+            continue
         pngs = clean_png_list(f for f in os.listdir(full) if f.lower().endswith(".png"))
         for f in pngs:
-            frames.append((key, "gfx/overlay_anim/" + d + "/" + f, os.path.join(full, f)))
+            frames.append((key, rel_prefix + "/" + d + "/" + f, os.path.join(full, f)))
     return frames
+
+
+def discover_pets(root):
+    """发现角色素材池。返回 [(角色名, 角色目录绝对路径, 资源路径前缀)]。
+
+    校验角色名（文件夹名）为 [A-Za-z0-9_]；超过 MAX_PETS 的角色跳过并警告。
+    无 pets/ 目录时返回空列表（由调用方走旧版 overlay_anim 回退）。
+    """
+    pets_dir = os.path.join(root, PETS_DIR_REL)
+    if not os.path.isdir(pets_dir):
+        return []
+    entries = []
+    for name in sorted(os.listdir(pets_dir)):
+        full = os.path.join(pets_dir, name)
+        if not os.path.isdir(full):
+            continue
+        if not PET_NAME_RE.match(name):
+            print("[!] 跳过角色「%s」：文件夹名含不安全字符"
+                  "（只允许英文字母/数字/下划线，以撒资源路径限制）" % name)
+            continue
+        entries.append((name, full, "gfx/pets/" + name))
+    if len(entries) > MAX_PETS:
+        print("=" * 60)
+        print("[!] 角色数量超过上限 %d，以下角色被跳过（不会写入帧清单）：" % MAX_PETS)
+        for name, _, _ in entries[MAX_PETS:]:
+            print("    - %s" % name)
+        print("=" * 60)
+        entries = entries[:MAX_PETS]
+    return entries
 
 
 def check_and_resize(frames, size, mode, auto_yes):
@@ -206,9 +266,59 @@ def verify_all_square(frames, size):
     return bad
 
 
-def lua_str_list(items):
-    body = "".join('        "%s",\n' % i for i in items)
-    return "{\n" + body + "    }"
+def lua_str_list(items, indent):
+    pad = " " * indent
+    body = "".join('%s"%s",\n' % (pad, i) for i in items)
+    return "{\n" + body + pad + "}"
+
+
+def write_frames_lua(root, pets, per_pet_grouped, legacy_single):
+    """生成 internalreactionoverlay_frames.lua。
+
+    pets/per_pet_grouped 非空 -> 新格式（角色池）:
+        return { pets = {...}, frames = { <角色> = { <动画键> = {...} }, ... } }
+    否则 legacy_single -> 旧格式（顶层即动画键，单角色，向后兼容旧版 main.lua）
+    """
+    FRAMES_LUA = os.path.join(root, "internalreactionoverlay_frames.lua")
+    lines = []
+    if pets:
+        lines += [
+            "-- 自动生成：多角色动画帧清单（扫描 resources/gfx/pets/<角色>/）",
+            "-- 由 gen_anim.py 生成；新增/替换帧或角色后重新运行 python gen_anim.py",
+            '-- 已过滤 Discord 附件重复帧（文件名带 " #数字" 后缀）',
+            "-- 结构：pets = 角色名列表（素材池，最多 %d 个）；frames = 角色 -> 动画键 -> 帧 PNG 路径" % MAX_PETS,
+            "",
+            "return {",
+            "    pets = {",
+        ]
+        for name in pets:
+            lines.append('        "%s",' % name)
+        lines.append("    },")
+        lines.append("    frames = {")
+        for name in pets:
+            grouped = per_pet_grouped[name]
+            lines.append('        ["%s"] = {' % name)
+            for key in sorted(grouped):
+                lines.append('            ["%s"] = %s,' % (key, lua_str_list(grouped[key], 16)))
+            lines.append("        },")
+        lines.append("    },")
+        lines.append("}")
+    else:
+        grouped = legacy_single
+        lines += [
+            "-- 自动生成：动画帧清单（扫描 resources/gfx/overlay_anim/，旧版单角色格式）",
+            "-- 由 gen_anim.py 生成；新增/替换帧后重新运行 python gen_anim.py",
+            '-- 已过滤 Discord 附件重复帧（文件名带 " #数字" 后缀）',
+            "",
+            "return {",
+        ]
+        for key in sorted(grouped):
+            lines.append('    ["%s"] = %s,' % (key, lua_str_list(grouped[key], 8)))
+        lines.append("}")
+
+    with open(FRAMES_LUA, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return FRAMES_LUA
 
 
 def main():
@@ -221,7 +331,7 @@ def main():
 
     import argparse
     parser = argparse.ArgumentParser(
-        description="重建 InternalReactionOverlay 帧清单（可选自动缩放 256×256）")
+        description="重建 InternalReactionOverlay 帧清单（多角色素材池；可选自动缩放 256×256）")
     parser.add_argument("root", nargs="?", default=None,
                         help="模组根目录（缺省自动定位；路径含空格时请加引号）")
     parser.add_argument("--mode", choices=("stretch", "cover", "contain"), default="contain",
@@ -234,22 +344,48 @@ def main():
     root = resolve_root(args)
     if not root:
         print("=" * 70)
-        print("错误：找不到动画目录 resources/gfx/overlay_anim。")
+        print("错误：找不到角色素材池 resources/gfx/pets（或旧版 resources/gfx/overlay_anim）。")
         print("请确认脚本放在模组根目录（与 main.lua 同级），或指定模组根目录：")
         print("    python gen_anim.py 'D:/path/to/InternalReactionOverlay+ 内置反应桌宠+'")
         print("（PowerShell 中路径含空格时必须加引号，否则会报 can't open file）")
         print("=" * 70)
         return 1
 
-    ANIM = os.path.join(root, "resources", "gfx", "overlay_anim")
-    if not os.path.isdir(ANIM):
-        print("错误：找不到动画帧目录：%s" % ANIM)
-        return 1
-
-    frames = collect_frames(root)
-    if not frames:
-        print("错误：overlay_anim 下没有找到任何 PNG 帧。")
-        return 1
+    pets = discover_pets(root)
+    legacy_mode = not pets
+    if legacy_mode:
+        # 旧版单角色回退：无 pets/ 但有 overlay_anim/
+        anim_dir = os.path.join(root, LEGACY_ANIM_DIR_REL)
+        if not os.path.isdir(anim_dir):
+            print("错误：找不到角色素材池 %s，也没有旧动画目录 %s。"
+                  % (os.path.join(root, PETS_DIR_REL), anim_dir))
+            return 1
+        print("[i] 未找到角色素材池 pets/，按旧版单角色格式扫描 overlay_anim/。")
+        per_pet_grouped = {}
+        frames = collect_pet_frames(anim_dir, "gfx/overlay_anim")
+        if not frames:
+            print("错误：overlay_anim 下没有找到任何 PNG 帧。")
+            return 1
+        grouped = {}
+        for key, rel, full in frames:
+            grouped.setdefault(key, []).append(rel)
+    else:
+        print("发现 %d 个角色（上限 %d）：%s" % (len(pets), MAX_PETS, ", ".join(n for n, _, _ in pets)))
+        frames = []          # 全角色帧合集（缩放/校验用）
+        per_pet_grouped = {}
+        for name, pet_dir, rel_prefix in pets:
+            pet_frames = collect_pet_frames(pet_dir, rel_prefix)
+            if not pet_frames:
+                print("[!] 角色「%s」下没有找到任何 PNG 帧，已跳过。" % name)
+                continue
+            frames.extend(pet_frames)
+            grouped = {}
+            for key, rel, full in pet_frames:
+                grouped.setdefault(key, []).append(rel)
+            per_pet_grouped[name] = grouped
+        if not frames:
+            print("错误：角色素材池里没有找到任何 PNG 帧。")
+            return 1
 
     # 缩放（交互运行按 y/回车 缩放；脚本/非交互运行自动缩放；Pillow 未安装则跳过）
     if HAVE_PIL:
@@ -271,29 +407,25 @@ def main():
         print("    如需该功能请安装: pip install pillow")
 
     # 生成帧清单
-    grouped = {}
-    for key, rel, full in frames:
-        grouped.setdefault(key, []).append(rel)
-
-    FRAMES_LUA = os.path.join(root, "internalreactionoverlay_frames.lua")
-    lines = [
-        "-- 自动生成：动画帧清单（扫描 resources/gfx/overlay_anim/）",
-        "-- 由 gen_anim.py 生成；新增/替换帧后重新运行 python gen_anim.py",
-        '-- 已过滤 Discord 附件重复帧（文件名带 " #数字" 后缀）',
-        "",
-        "return {",
-    ]
-    for key in sorted(grouped):
-        lines.append("    %s = %s," % (key, lua_str_list(grouped[key])))
-    lines.append("}")
-
-    with open(FRAMES_LUA, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-    print("internalreactionoverlay_frames.lua 已重建(%d 个动画):" % len(grouped))
-    for key in sorted(grouped):
-        print("  %-14s %2d 帧" % (key, len(grouped[key])))
-    print("生成位置: %s" % FRAMES_LUA)
+    if legacy_mode:
+        out = write_frames_lua(root, [], {}, grouped)
+        print("internalreactionoverlay_frames.lua 已重建(旧版单角色格式, %d 个动画):" % len(grouped))
+        for key in sorted(grouped):
+            print("  %-14s %2d 帧" % (key, len(grouped[key])))
+    else:
+        # 只输出实际扫到帧的角色（空角色文件夹已在上面警告跳过）
+        valid_names = [n for n, _, _ in pets if n in per_pet_grouped]
+        out = write_frames_lua(root, valid_names, per_pet_grouped, None)
+        print("internalreactionoverlay_frames.lua 已重建(角色池格式, %d 个角色):" % len(per_pet_grouped))
+        for name in valid_names:
+            grouped = per_pet_grouped.get(name)
+            if not grouped:
+                continue
+            total = sum(len(v) for v in grouped.values())
+            print("  [%s] %d 个动画 / %d 帧:" % (name, len(grouped), total))
+            for key in sorted(grouped):
+                print("      %-12s %2d 帧" % (key, len(grouped[key])))
+    print("生成位置: %s" % out)
     return 0
 
 

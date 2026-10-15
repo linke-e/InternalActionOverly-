@@ -1,5 +1,5 @@
 -- ============================================================
---  InternalReactionOverlay —— 配置文件
+--  InternalReactionOverlay+ —— 配置文件
 --  本文件被 main.lua 通过 require("internalreactionoverlay_config") 加载。
 --  所有可调参数集中在此，修改配置无需改动 main.lua 逻辑。
 --  适用：以撒的结合：忏悔+ (Repentance+)
@@ -7,38 +7,58 @@
 -- ============================================================
 
 -- ---------------------------------------------------------
+--  桌宠角色素材池
+--  素材目录：resources/gfx/pets/<角色名>/（一个角色一个文件夹，最多 5 个）
+--    pets/<角色名>/main.png、main_sad.png   常态/半血静态单帧
+--    pets/<角色名>/<动画键>/xxx_000.png     每个动画一个子文件夹
+--  可用角色列表由 gen_anim.py 扫描生成（internalreactionoverlay_frames.lua），
+--  新增角色文件夹后重新运行 python gen_anim.py 即可。
+-- ---------------------------------------------------------
+
+-- ---------------------------------------------------------
 --  配置区（按需修改）
 -- ---------------------------------------------------------
 local config = {
+    -- 当前使用的桌宠角色（素材池中的文件夹名）。
+    -- 也可在游戏内 Mod Config Menu 的「桌宠角色」页切换（会存入存档）。
+    activePet = "Angle",
+    -- 当前角色缺少某动画时，是否按素材池顺序回退到其它角色的同名动画
+    -- （关闭后缺就缺，对应功能自动禁用）
+    petFallback = true,
+
     -- 动画帧模板 anm2（1 帧 256×256；运行时用 ReplaceSpritesheet 换成各帧 PNG）
     frameTemplateAnm2 = "gfx/overlay_frame_template.anm2",
     -- 动画播放速度（渲染帧/秒；游戏渲染 60fps）
     -- 未在 animHold 中单独指定的动画使用此值：
     -- 15fps = 每 4 渲染帧换 1 帧
     animFps = 15,
+    -- 全局动画速度倍率：>1 加速、<1 减速，作用在 animFps 与 animHold 之上
+    -- （实际每帧停留 = 原停留 / animSpeed，最小 1 渲染帧）
+    animSpeed = 1.0,
 
     -- 按动画键单独设置【每帧停留的渲染帧数】（60 帧 ≈ 1 秒）。
     -- 动画帧数很少（2~18 帧），统一 fps 会让短动画一闪而过，
     -- 这里按帧数调慢，使每个动画总时长约 1 秒左右。
-    -- 键与 internalreactionoverlay_frames.lua 一致；未列出的用 animFps 兜底。
+    -- 键与各角色的动画文件夹名一致；未列出的用 animFps 兜底。
+    -- （ animSpeed 不为 1 时，实际停留 = 此值 / animSpeed ）
     animHold = {                    --每个动画帧渲染多少个游戏帧
-        activity  = 18,  -- 5 帧  
-        Medicine   = 18,  -- 5 帧  
-        wink      = 45,  -- 2 帧  
-        wink1     = 45,  -- 2 帧  
-        boss      = 45,  -- 2 帧  
-        bad       = 45,  -- 2 帧  
-        item2     = 18,  -- 5 帧  
-        idle2     = 15,  -- 6 帧  
-        idle4     = 30,  -- 3 帧  
-        idle3     = 11,   -- 8 帧  
-        idle1     = 45,  -- 2 帧  
-        item0     = 6,   -- 15 帧 
-        item1     = 18,  -- 5 帧  
-        item3     = 15,  -- 6 帧  
-        item4     = 22,   -- 8 帧  
-        half      = 9,   -- 10 帧 
-        hurt      = 30,  -- 3 帧  
+        activity  = 18,  -- 5 帧
+        Medicine   = 18,  -- 5 帧
+        wink      = 45,  -- 2 帧
+        wink1     = 45,  -- 2 帧
+        boss      = 45,  -- 2 帧
+        bad       = 45,  -- 2 帧
+        item2     = 18,  -- 5 帧
+        idle2     = 15,  -- 6 帧
+        idle4     = 30,  -- 3 帧
+        idle3     = 11,   -- 8 帧
+        idle1     = 45,  -- 2 帧
+        item0     = 6,   -- 15 帧
+        item1     = 18,  -- 5 帧
+        item3     = 15,  -- 6 帧
+        item4     = 22,   -- 8 帧
+        half      = 9,   -- 10 帧
+        hurt      = 30,  -- 3 帧
     },
     -- 所有动画帧均为 256×256
     frameSize = 256,
@@ -53,7 +73,7 @@ local config = {
     -- ---------------------------------------------------------
     --  主动画：回到 main 状态时循环播放的动画。
     --  entries 每项：{ key = 动画键, weight = 权重 }
-    --  动画键定义见 internalreactionoverlay_frames.lua。
+    --  动画键定义见各角色素材文件夹（internalreactionoverlay_frames.lua）。
     --  满血：静态贴图 main.png（main_static）。
     --  半血（总血量<=半颗心）：半血事件动画（half）播放完回
     --  main 后，常态贴图切换为 sadStatic（main_sad.png）。
@@ -75,12 +95,12 @@ local config = {
     -- ---------------------------------------------------------
     wink = {
         enabled = true,     -- 眨眼循环总开关
-        animKey = "wink",   -- 满血眨眼动画（overlay_wink 2 帧）
+        animKey = "wink",   -- 满血眨眼动画（2 帧）
         mode = "random",    -- 满血眨眼模式：random / fixed
         delayMin = 3,       -- 满血 random：间隔最小值（秒）
         delayMax = 5,       -- 满血 random：间隔最大值（秒）
         delayFixed = 4,     -- 满血 fixed：固定间隔（秒）
-        sadAnimKey = "wink1",   -- 半血眨眼动画（overlay_wink1 2 帧）
+        sadAnimKey = "wink1",   -- 半血眨眼动画（2 帧）
         sadMode = "random",     -- 半血眨眼模式：random / fixed
         sadDelayMin = 3,        -- 半血 random：间隔最小值（秒）
         sadDelayMax = 7,        -- 半血 random：间隔最大值（秒）
@@ -91,15 +111,17 @@ local config = {
     --  待机动画：处于 main 状态（无任何事件）时，偶尔随机触发。
     --  逻辑：连续 main 满 minMainTime 帧后，每秒按 triggerChancePerSec
     --        概率随机挑一个待机动画播放一遍，播完回到 main。
+    --  注意：TangTang 等角色若有多余的 idle5 等素材，想启用就在
+    --        entries 里加 { key = "idle5", weight = 2 }。
     -- ---------------------------------------------------------
     idle = {
         minMainTime = 600,           -- 连续 main 满 10 秒(600 帧@60fps)才开始
-        triggerChancePerSec = 0.30,  -- 每秒触发概率（15%）
+        triggerChancePerSec = 0.30,  -- 每秒触发概率（30%）
         entries = {
-            { key = "idle1", weight = 5 },  -- 待机① 2 帧
-            { key = "idle2", weight = 3 },  -- 待机② 6 帧
-            { key = "idle3", weight = 2 },  -- 待机③ 8 帧
-            { key = "idle4", weight = 2 },  -- 待机④ 3 帧
+            { key = "idle1", weight = 5 },  -- 待机①
+            { key = "idle2", weight = 3 },  -- 待机②
+            { key = "idle3", weight = 2 },  -- 待机③
+            { key = "idle4", weight = 2 },  -- 待机④
         },
     },
 
@@ -113,7 +135,7 @@ local config = {
     itemQuality = {
         enabled = true,          -- 总开关（ReactionAPI 未加载时自动失效）
         -- 播放模式：once = 检测到质量变化时播一遍回 main
-        --            loop = 房间存在道具期间持续循环播放
+        --            loop = 房间存在道具期间持续循环播放（质量变化时切换动画）
         mode = "once",
         -- 播放不打断：item 动画一旦开始播放，直到播完为止；
         -- 期间不响应受击/卡牌等更高优先级事件（它们顺延到动画结束后再响应）。
@@ -163,16 +185,15 @@ local config = {
     --  每项两种写法：
     --    * { key = "动画键" }                     —— 固定动画
     --    * { variants = { {key=...,weight=...}, ... } } —— 按权重随机选一个
-    --  
+    --
     --  播放规则见下方 playback。
     -- ---------------------------------------------------------
     events = {
-
-        active   = { key = "activity" },           -- 使用主动/副主动道具（activity 4 帧）
-        boss     = { key = "boss" },               -- Boss 场景（3 帧）
-        half     = { key = "half" },               -- 半血/半残（14 帧）
+        active   = { key = "activity" },           -- 使用主动/副主动道具
+        boss     = { key = "boss" },               -- Boss 场景
+        half     = { key = "half" },               -- 半血/半残
         hurt     = { key = "hurt" },               -- 受击（伤害类型见 hurt.damageFlags）
-        cardpill = { key = "Medicine" },      -- 使用卡牌/药丸（Medicine 13 帧）
+        cardpill = { key = "Medicine" },           -- 使用卡牌/药丸
         item     = { key = "item_auto" },          -- 道具质量：动态选择 item0~item4（见 itemQuality）
     },
 
@@ -183,7 +204,6 @@ local config = {
     --        直到条件消失才再次触发，避免持续状态导致动画反复重播。
     -- ---------------------------------------------------------
     playback = {
-
         active   = "once",
         boss     = "once",
         half     = "once",
@@ -193,7 +213,7 @@ local config = {
     },
 
     cardpillDuration = 90,
-    -- 主动/副主动道具使用状态持续时间（渲染帧；activity 动画 4 帧约 1 秒）
+    -- 主动/副主动道具使用状态持续时间（渲染帧）
     activeItemDuration = 90,
 
     -- 半血判定
@@ -224,7 +244,6 @@ local config = {
 
     -- 每个状态的独立开关
     states = {
-
         hurt     = true,   -- 受击（火焰/爆炸/激光/尖刺等）
         cardpill = true,   -- 使用卡牌/药丸
         active   = true,   -- 使用主动/副主动道具
