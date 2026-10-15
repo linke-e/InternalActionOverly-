@@ -22,9 +22,10 @@ local config = {
     -- 当前使用的桌宠角色（素材池中的文件夹名）。
     -- 也可在游戏内 Mod Config Menu 的「桌宠角色」页切换（会存入存档）。
     activePet = "Angle",
-    -- 当前角色缺少某动画时，是否按素材池顺序回退到其它角色的同名动画
-    -- （关闭后缺就缺，对应功能自动禁用）
-    petFallback = true,
+    -- 当前角色缺少某动画时是否借用其它角色的同名动画。
+    -- 默认关闭：缺失动画对应的事件不触发，桌宠保持待机/常态动画不借用他人素材。
+    -- （该开关也可在游戏内 MCM「桌宠角色」页切换）
+    petFallback = false,
 
     -- 动画帧模板 anm2（1 帧 256×256；运行时用 ReplaceSpritesheet 换成各帧 PNG）
     frameTemplateAnm2 = "gfx/overlay_frame_template.anm2",
@@ -37,17 +38,16 @@ local config = {
     animSpeed = 1.0,
 
     -- 按动画键单独设置【每帧停留的渲染帧数】（60 帧 ≈ 1 秒）。
-    -- 动画帧数很少（2~18 帧），统一 fps 会让短动画一闪而过，
-    -- 这里按帧数调慢，使每个动画总时长约 1 秒左右。
+    -- 实际动画总时长 = 帧数 × animHold / animSpeed（约 1.5 秒量级）；
+    -- animHold 按【动画键】全局生效，不同角色同键帧数不同（如 Angle 的 item4
+    -- 8 帧、TangTang 13 帧），总时长会随角色变化，调参时以当前角色为准。
     -- 键与各角色的动画文件夹名一致；未列出的用 animFps 兜底。
-    -- （ animSpeed 不为 1 时，实际停留 = 此值 / animSpeed ）
     animHold = {                    --每个动画帧渲染多少个游戏帧
         activity  = 18,  -- 5 帧
         Medicine   = 18,  -- 5 帧
         wink      = 45,  -- 2 帧
         wink1     = 45,  -- 2 帧
         boss      = 45,  -- 2 帧
-        bad       = 45,  -- 2 帧
         item2     = 18,  -- 5 帧
         idle2     = 15,  -- 6 帧
         idle4     = 30,  -- 3 帧
@@ -160,24 +160,36 @@ local config = {
     --  伤害类型参考：https://cuerzor.github.io/IsaacDocs/rep/enums/DamageFlag.html
     -- ---------------------------------------------------------
     hurt = {
-        duration = 90,   -- 受击状态持续时间（渲染帧；hurt 动画约 1 秒，留余量）
+        -- 受击状态持续时间（渲染帧，绝对帧数、不随 animSpeed 缩放；
+        -- main.lua 会按 1/animSpeed 换算，animSpeed<1 时动画变慢、状态同步变长）
+        duration = 90,
         -- 非惩罚性伤害（带 DamageFlag.DAMAGE_NO_PENALTIES，不扣恶魔房概率等惩罚）
         -- 不触发受击动画
         ignoreNoPenalties = true,
         -- 怪物伤害：角色受到来自怪物的攻击（本体接触/爪击/敌方弹幕/激光/怪物炸弹）
         -- 也触发受击动画（判定决策树见 main.lua mod:IsMonsterDamage）
         monsterDamage = true,
-        damageFlags = {
-            DamageFlag.DAMAGE_FIRE,          -- 火焰伤害（壁炉等）
-            DamageFlag.DAMAGE_EXPLOSION,     -- 爆炸伤害
-            DamageFlag.DAMAGE_LASER,         -- 激光伤害
-            DamageFlag.DAMAGE_ACID,          -- 酸液伤害
-            DamageFlag.DAMAGE_SPIKES,        -- 尖刺伤害
-            DamageFlag.DAMAGE_POOP,          -- 红屎伤害
-            DamageFlag.DAMAGE_TNT,           -- TNT 桶伤害
-            DamageFlag.DAMAGE_POISON_BURN,   -- 中毒/燃烧伤害
-            DamageFlag.DAMAGE_PITFALL,       -- 塌陷坑洞伤害
-        },
+        -- 以常量名构建并过滤当前 API 不存在的 DamageFlag：
+        -- 数组里若直接引用未定义常量会产生 nil 洞，main.lua 的 ipairs 遍历
+        -- 会在洞处静默截断，之后的伤害类型全部失效
+        damageFlags = (function()
+            local names = {
+                "DAMAGE_FIRE",          -- 火焰伤害（壁炉等）
+                "DAMAGE_EXPLOSION",     -- 爆炸伤害
+                "DAMAGE_LASER",         -- 激光伤害
+                "DAMAGE_ACID",          -- 酸液伤害
+                "DAMAGE_SPIKES",        -- 尖刺伤害
+                "DAMAGE_POOP",          -- 红屎伤害
+                "DAMAGE_TNT",           -- TNT 桶伤害
+                "DAMAGE_POISON_BURN",   -- 中毒/燃烧伤害
+                "DAMAGE_PITFALL",       -- 塌陷坑洞伤害
+            }
+            local t = {}
+            for _, n in ipairs(names) do
+                if DamageFlag[n] then t[#t + 1] = DamageFlag[n] end
+            end
+            return t
+        end)(),
     },
 
     -- ---------------------------------------------------------
@@ -194,7 +206,9 @@ local config = {
         half     = { key = "half" },               -- 半血/半残
         hurt     = { key = "hurt" },               -- 受击（伤害类型见 hurt.damageFlags）
         cardpill = { key = "Medicine" },           -- 使用卡牌/药丸
-        item     = { key = "item_auto" },          -- 道具质量：动态选择 item0~item4（见 itemQuality）
+        -- item 是动态哨兵：main.lua 对 item 状态特殊处理（不读本 key），
+        -- 按房间道具质量从 itemQuality.animKeys 动态选择 item0~item4
+        item     = { key = "item_auto" },
     },
 
     -- ---------------------------------------------------------
@@ -261,7 +275,7 @@ local config = {
     topData = false,
 }
 
--- 随机种子
-pcall(function() math.randomseed(Isaac.GetTime()) end)
+-- 注：不在此处做 math.randomseed —— 以撒所有 mod 共享同一个 Lua VM 的
+-- math.random，这里重新播种会扰乱其它 mod 的随机流；游戏自身会做随机种子。
 
 return config

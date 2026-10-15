@@ -206,6 +206,31 @@ def discover_pets(root):
     return entries
 
 
+def warn_frame_gaps(per_pet_grouped):
+    """检查各动画帧文件名的数字序号（_000, _001, ...）是否连续，发现空洞时警告。
+
+    帧按文件名排序播放，序号缺号意味着动画在该处会跳一拍——多半是源素材
+    缺文件（Discord 过滤不会造成缺号：它每个基础名至少保留一个文件）。
+    """
+    NUM_RE = re.compile(r"_(\d+)\.png$")
+    for pet_name, grouped in per_pet_grouped.items():
+        for key, rels in grouped.items():
+            nums = []
+            for rel in rels:
+                m = NUM_RE.search(rel)
+                if m:
+                    nums.append(int(m.group(1)))
+            if len(nums) >= 2:
+                nums_sorted = sorted(nums)
+                expect = list(range(nums_sorted[0], nums_sorted[0] + len(nums_sorted)))
+                if nums_sorted != expect:
+                    missing = sorted(set(expect) - set(nums_sorted))
+                    print("[!] 角色「%s」动画「%s」帧序号不连续，缺号: %s"
+                          "（动画播放到此处会跳帧；请补齐源素材后重跑本脚本）"
+                          % (pet_name, key,
+                             ", ".join("_%03d" % n for n in missing)))
+
+
 def check_and_resize(frames, size, mode, auto_yes):
     """检测非 size×size 的 PNG 帧；提示确认后原位缩放覆盖。返回 (检测数, 成功数, 失败数)。"""
     bad = []  # [(资源相对路径, 绝对路径, 实际尺寸)]
@@ -388,6 +413,8 @@ def main():
             return 1
 
     # 缩放（交互运行按 y/回车 缩放；脚本/非交互运行自动缩放；Pillow 未安装则跳过）
+    if not legacy_mode:
+        warn_frame_gaps(per_pet_grouped)
     if HAVE_PIL:
         check_and_resize(frames, args.size, args.mode, args.yes)
         # 校验：所有会被使用的帧都应为目标尺寸，否则游戏内可能不显示

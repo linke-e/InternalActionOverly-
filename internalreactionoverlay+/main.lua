@@ -342,6 +342,14 @@ local function frameDelay(animKey)
     return math.max(1, math.floor(hold / speed))
 end
 
+-- 事件状态时长（渲染帧）：按 1/animSpeed 缩放——animSpeed<1 时动画变慢，
+-- 固定帧数会在动画播完前结束状态将其截断，故时长同步拉长
+local function eventDuration(base)
+    local speed = tonumber(config.animSpeed) or 1.0
+    if speed <= 0 then speed = 1.0 end
+    return math.max(1, math.floor(base / speed + 0.5))
+end
+
 -- 开始播放某动画（从第 1 帧）
 function mod:StartAnim(key, mode)
     local frames = mod:GetFrames(key)
@@ -530,7 +538,7 @@ end
 -- 使用卡牌 -> 触发卡牌/药丸动画（Medicine）
 function mod:OnUseCard(cardType, player, useFlags)
     if config.states.cardpill then
-        mod.cardpillTimer = config.cardpillDuration
+        mod.cardpillTimer = eventDuration(config.cardpillDuration)
     end
     return nil   -- 不拦截卡牌使用
 end
@@ -538,7 +546,7 @@ end
 -- 使用药丸 -> 触发卡牌/药丸动画（Medicine）
 function mod:OnUsePill(pillColor, player, useFlags)
     if config.states.cardpill then
-        mod.cardpillTimer = config.cardpillDuration
+        mod.cardpillTimer = eventDuration(config.cardpillDuration)
     end
     return nil   -- 不拦截药丸使用
 end
@@ -549,7 +557,7 @@ end
 -- 药丸走 MC_USE_PILL、卡牌走 MC_USE_CARD，天然不会命中本回调。
 function mod:OnUseActiveItem(collectibleType, rng, player, useFlags, activeSlot, varData)
     if config.states.active then
-        mod.activeItemTimer = config.activeItemDuration
+        mod.activeItemTimer = eventDuration(config.activeItemDuration)
     end
     return nil   -- 不拦截主动道具使用
 end
@@ -643,7 +651,7 @@ function mod:OnPlayerTakeDmg(entity, amount, damageFlags, source, countdownFrame
         trigger = mod:IsMonsterDamage(source, damageFlags)
     end
     if trigger then
-        mod.hurtTimer = (config.hurt and config.hurt.duration) or 90
+        mod.hurtTimer = eventDuration((config.hurt and config.hurt.duration) or 90)
     end
     return nil   -- 不拦截伤害
 end
@@ -1287,8 +1295,9 @@ local function registerMCM(MCM)
         function() return config.petFallback end,
         function(v) config.petFallback = v end,
         "缺素材时借用其它角色",
-        { "当前角色没有某动画时，按素材池顺序借用其它角色的同名动画",
-          "关闭后缺失动画对应的功能自动禁用" })
+        { "开启：当前角色没有某动画时，按素材池顺序借用其它角色的同名动画",
+          "关闭（默认）：缺失动画对应的事件不触发，桌宠保持待机动画",
+          "切换后立即按新角色的素材重新校验各状态开关" })
 
     -- ---------- 状态开关 ----------
     MCM.AddText(N, "状态开关", function() return "各状态动画的独立开关" end)

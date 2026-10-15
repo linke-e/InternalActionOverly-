@@ -5,10 +5,6 @@
 在游戏**左下角**叠加一张 256×256 动画桌宠。触发游戏事件时播放对应的反应动画，
 播放完毕回到主状态（常态贴图 + 随机眨眼）；main 状态静置时偶尔随机播放待机动画。
 
-**v3 新增：桌宠角色素材池** —— 最多 5 个角色（一个角色一个素材文件夹），
-游戏内通过 [Mod Config Menu](https://steamcommunity.com/sharedfiles/filedetails/?id=2686875783)
-或配置文件一键切换；当前角色缺少的动画可自动借用其它角色的同名动画。
-
 > 适用版本：以撒的结合：忏悔+ (The Binding of Isaac: Repentance+)
 > 文档参考：[IsaacDocs (wofsauge)](https://wofsauge.github.io/IsaacDocs/rep/)
 
@@ -16,9 +12,9 @@
 
 ## 安装
 
-1. 在创意工坊订阅，或把本模组文件夹放进
+1. 在创意工坊订阅
 ```
-<以撒安装目录>/mods/
+https://steamcommunity.com/sharedfiles/filedetails/?id=3786174946
 ```
 2. 若需「房间道具质量」动画（item0~item4），需**同时安装依赖**：
    [ReactionAPI](https://steamcommunity.com/sharedfiles/filedetails/?id=3096181411)
@@ -54,8 +50,9 @@ resources/gfx/pets/
 3. 在 mod 根目录运行 `python gen_anim.py` 重建帧清单；
 4. 游戏内 MCM「桌宠角色」页即可选到新角色。
 
-> 角色素材不全也能跑：开启 `petFallback`（默认开）时，当前角色缺少的动画会按
-> 素材池顺序自动借用其它角色的同名动画；关闭后缺失动画对应的功能自动禁用。
+> 角色素材不全也能跑：默认情况下（`petFallback = false`）当前角色缺少的动画对应
+> 的**事件不触发，桌宠保持待机/常态动画**，不借用其它角色的素材；想跨角色借用，
+> 在 MCM「桌宠角色」页打开「缺素材时借用其它角色」（或改 `petFallback = true`）。
 
 ---
 
@@ -170,7 +167,7 @@ hurt > cardpill > active > boss > item > half > idle > wink > main
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `activePet` | "Angle" | 当前桌宠角色（素材池文件夹名；MCM 可切换并存档） |
-| `petFallback` | true | 当前角色缺某动画时按池顺序借用其它角色的同名动画 |
+| `petFallback` | false | 是否借用其它角色的同名动画补缺；默认关闭（缺动画的事件不触发，保持待机） |
 | `animFps` | 15 | 默认动画帧率（渲染帧/秒，60fps 基准） |
 | `animHold` | 见文件 | 按动画键单独设置每帧停留帧数（60 帧≈1s） |
 | `animSpeed` | 1.0 | 全局动画速度倍率（>1 加速 / <1 减速） |
@@ -223,23 +220,67 @@ hurt > cardpill > active > boss > item > half > idle > wink > main
 
 ---
 
-## 素材替换
+## 素材替换（gen_anim.py 部署脚本使用说明）
 
 动画帧在 `resources/gfx/pets/<角色名>/` 下，每个动画一个文件夹（每帧一张 256×256 PNG），
-或根目录单张 PNG（`main.png`→main_static、`death.png`→death_static、其余 `<name>.png`→`<name>`）。
+或根目录单张 PNG（根 PNG 映射见下方对照表）。
 
-**新增 / 替换 / 删除素材或角色后**，在 mod 根目录运行（目录名含空格，路径必须加引号）：
+### 运行方式
 
+- **运行环境**：Python 3（缩放功能需 Pillow：`pip install pillow`；未安装时自动跳过
+  缩放并警告，帧清单照常生成）。
+- 脚本放在 mod 根目录（与 main.lua 同级），在该目录开终端/PowerShell 执行：
 ```
-python "gen_anim.py"
+python gen_anim.py
 ```
+  （路径含空格时完整路径必须加引号，否则 PowerShell 会把路径拆开报 can't open file）
+- **推荐在终端里运行**，能看到输出与报错；直接双击脚本会一闪而过，看不到结果。
 
-脚本会：
+### 何时需要重新运行
+
+- 往角色文件夹里新增 / 删除 / 改名动画帧后；
+- 新增 / 删除角色文件夹后；
+- 更换整套动画素材后。
+
+### 动画文件夹 → 动画键对照
+
+| 角色文件夹内容 | 动画键 | 在 config 中的引用处 |
+|---|---|---|
+| `main.png` | main_static | `config.main.entries`（满血常态贴图） |
+| `main_sad.png` | main_sad | `config.main.sadStatic`（半血常态贴图） |
+| `death.png` | death_static | 死亡静态（可选，需自行在 events 引用） |
+| `voice_training/` | activity | 旧目录名兼容，等价 `activity/` |
+| `activity/` `boss/` `hurt/` `half/` `Medicine/` `wink/` `wink1/` | 同名键 | `config.events` |
+| `idle1/` ~ `idle5/` | 同名键 | `config.idle.entries` |
+| `item0/` ~ `item4/` | 同名键 | `config.itemQuality.animKeys` |
+
+> 子文件夹名即动画键（限英文字母/数字/下划线，含非法字符的文件夹会被跳过并警告）；
+> 其余根 PNG 按 `<name>.png` → `<name>` 映射。
+
+### 脚本行为
+
 - 扫描 `resources/gfx/pets/` 下全部角色（最多 5 个，角色文件夹名限英文字母/数字/下划线）；
 - **自动缩放**：检测到非 256×256 的动画帧时，提示确认后缩放为 256×256 并【覆盖原文件】
   （回答 `y` 才转换，`n`/回车则跳过不动；Pillow 未安装时自动跳过缩放并警告）；
 - 自动过滤 Discord 下载产生的重复帧（文件名带 ` #数字` 后缀，如 `xxx_000 #50548.png`）；
+- 检查帧序号连续性（缺号时打印 `[!]` 警告，动画在该处会跳帧）；
 - 重新生成 `internalreactionoverlay_frames.lua` 多角色帧清单。
+
+### 输出怎么看
+
+脚本会打印角色发现、缩放/校验结果与每个动画的帧数，例如：
+```
+发现 2 个角色（上限 5）：Angle, TangTang
+校验通过：全部 231 个动画帧均为 256×256，可直接进游戏使用。
+internalreactionoverlay_frames.lua 已重建(角色池格式, 2 个角色):
+  [Angle] 18 个动画 / 89 帧:
+      Medicine      5 帧
+      activity      5 帧
+      ...
+生成位置: <mod根目录>\internalreactionoverlay_frames.lua
+```
+
+### 参数
 
 > 缩放方式默认 `contain`（等比缩放 + 透明边，不变形不裁切）；可用
 > `--mode cover|stretch` 切换，如 `python gen_anim.py --mode cover`；
@@ -254,11 +295,13 @@ python "gen_anim.py"
 
 ## 素材变少 / 角色素材不全 → 自动降级
 
-- 当前角色缺少某动画键（例如删掉了 `idle3/`）→ 开着 `petFallback` 时自动借用
-  其它角色的同名动画；关闭时**自动禁用**引用它的功能，不报错、不影响其它功能：
+- **素材缺失自动降级**（不借用）：缺失动画对应的事件不触发，桌宠保持待机/常态动画：
+  - 没有某事件动画 → 该事件不再触发（自动禁用并记录，换到素材齐全的角色时自动恢复开启）
   - 没有某待机动画 → 待机池自动去掉该键
   - 没有半血常态贴图 → 回退成 `main_static`
   - 某道具质量等级没有素材 → 该等级不播动画，其余照常
+- 开启 `petFallback`（MCM「缺素材时借用其它角色」）后：缺失动画自动借用素材池中
+  其它角色的同名动画，行为同上但以借用素材播放。
 - 当前角色名失效（文件夹被删/改名）→ 自动回退素材池第一个角色。
 - 角色数量超过 5 个 → `gen_anim.py` 跳过多余角色并警告。
 
@@ -275,9 +318,8 @@ internalreactionoverlay+/
 ├── resize_256.py                     # 批量把任意素材缩放为 256×256（输出到 resized_256/，原图不动）
 ├── metadata.xml                      # 模组元数据
 ├── icon.png
-├── README.md / README_en.md          # 双语文档
+├── README.md / README_en.md          # 双语文档（含 gen_anim.py 部署脚本使用说明）
 ├── Angle.zip / TangTang.zip          # 角色素材压缩包备份
-├── 一键部署工具使用.txt               # 素材脚本使用说明
 └── resources/gfx/
     ├── overlay_frame_template.anm2   # 帧模板（256×256 单帧）
     └── pets/                         # ★ 桌宠角色素材池（一角色一文件夹，最多 5 个）
@@ -318,8 +360,8 @@ A：确认受伤时真的掉血（飞行、圣斗篷等免疫状态下不会触�
 若日志中有其它 mod 的 `PreEntityTakeDamage` 报错，本 mod 已通过 EARLY 优先级保证不受影响。
 
 **Q：切角色后某个动画不播放？**
-A：当前角色缺该素材。开启 MCM「桌宠角色-缺素材时借用其它角色」（`petFallback`）
-即可自动借用；否则对应功能自动禁用。
+A：当前角色缺该素材，默认不借用他人素材——对应事件不触发，桌宠保持待机动画。
+想让该动画跨角色借用，打开 MCM「桌宠角色-缺素材时借用其它角色」（`petFallback`）即可。
 
 **Q：替换素材后游戏里完全不显示桌宠？**
 A：最常见原因是新素材**不是 256×256**（且各帧尺寸不一致），Isaac 引擎无法正常渲染，

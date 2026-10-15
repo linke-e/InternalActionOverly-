@@ -7,12 +7,6 @@ When a game event triggers, the pet plays a matching reaction animation, then
 returns to its main state (static sprite + random blinking). While idle in the
 main state, it occasionally plays a random idle animation.
 
-**New in v3: desktop-pet character pool** — up to 5 characters (one folder of
-animation assets per character), switchable in-game via
-[Mod Config Menu](https://steamcommunity.com/sharedfiles/filedetails/?id=2686875783)
-or the config file. Missing animations of the active character can automatically
-fall back to the same animation of another character in the pool.
-
 > Requires: The Binding of Isaac: Repentance+
 > API reference: [IsaacDocs (wofsauge)](https://wofsauge.github.io/IsaacDocs/rep/)
 
@@ -20,9 +14,9 @@ fall back to the same animation of another character in the pool.
 
 ## Installation
 
-1. Subscribe on the Steam Workshop, or copy this mod folder into:
+1. Subscribe on the Steam Workshop
 ```
-<Isaac install directory>/mods/
+https://steamcommunity.com/sharedfiles/filedetails/?id=3786174946
 ```
 2. For the "room item quality" animations (item0~item4), also install the dependency:
    [ReactionAPI](https://steamcommunity.com/sharedfiles/filedetails/?id=3096181411)
@@ -62,10 +56,11 @@ Two characters are bundled: **Angle** and **TangTang**, all 256×256 transparent
 3. Run `python gen_anim.py` in the mod root to rebuild the frame manifest;
 4. The new character appears in the MCM "桌宠角色" page.
 
-> Incomplete character assets still work: with `petFallback` enabled (default),
-> animations missing from the active character fall back to the same animation
-> from other characters in the pool; with it disabled, features referencing
-> missing animations are simply disabled.
+> Incomplete character assets still work: by default (`petFallback = false`) events
+> referencing a missing animation simply do not trigger — the pet stays in its
+> idle/normal animation and never borrows other characters' assets. To borrow
+> across characters, enable "缺素材时借用其它角色" in the MCM character page
+> (or set `petFallback = true`).
 
 ---
 
@@ -188,7 +183,7 @@ All tunables live in `internalreactionoverlay_config.lua`; no need to touch main
 | Option | Default | Description |
 |---|---|---|
 | `activePet` | "Angle" | Active desktop-pet character (pool folder name; MCM-switchable, persisted) |
-| `petFallback` | true | Fall back to other characters' same-key animation when the active one lacks it |
+| `petFallback` | false | Borrow other characters' same-key animation when missing; off by default (missing events don't trigger, pet stays idle) |
 | `animFps` | 15 | Default animation frame rate (render fps, 60 fps basis) |
 | `animHold` | see file | Per-animation frame hold (render frames per animation frame; 60 ≈ 1 s) |
 | `animSpeed` | 1.0 | Global animation speed multiplier (>1 faster / <1 slower) |
@@ -241,27 +236,74 @@ Every change is persisted into the save. Without MCM, edit
 
 ---
 
-## Replacing Assets
+## Replacing Assets (gen_anim.py deployment script guide)
 
 Animation frames live in `resources/gfx/pets/<Character>/` — one folder per animation
-(one 256×256 PNG per frame), plus root single-frame PNGs (`main.png`→main_static,
-`death.png`→death_static, any other `<name>.png`→`<name>`).
+(one 256×256 PNG per frame), plus root single-frame PNGs (mapping table below).
 
-**After adding / replacing / deleting assets or characters**, run from the mod root
-(quote the path if it contains spaces):
+### How to run
 
+- **Requirements**: Python 3 (Pillow needed for auto-resize: `pip install pillow`;
+  without it the script skips resizing with a warning and still rebuilds the manifest).
+- Keep the script in the mod root (next to main.lua) and run from a terminal/PowerShell:
 ```
-python "gen_anim.py"
+python gen_anim.py
 ```
+  (quote the full path if it contains spaces, or PowerShell splits it and fails with
+  "can't open file")
+- **Run it from a terminal**, not by double-clicking — a double-clicked window closes
+  instantly and you lose all output and errors.
 
-The script:
+### When to re-run
+
+- After adding / deleting / renaming animation frames inside a character folder;
+- After adding / deleting character folders;
+- After replacing a whole set of assets.
+
+### Animation folder → animation key mapping
+
+| Character folder content | Animation key | Referenced from |
+|---|---|---|
+| `main.png` | main_static | `config.main.entries` (full-health idle sprite) |
+| `main_sad.png` | main_sad | `config.main.sadStatic` (half-health idle sprite) |
+| `death.png` | death_static | death sprite (optional; wire it up in events yourself) |
+| `voice_training/` | activity | legacy folder-name alias for `activity/` |
+| `activity/` `boss/` `hurt/` `half/` `Medicine/` `wink/` `wink1/` | same name | `config.events` |
+| `idle1/` ~ `idle5/` | same name | `config.idle.entries` |
+| `item0/` ~ `item4/` | same name | `config.itemQuality.animKeys` |
+
+> A sub-folder's name is its animation key (ASCII letters/digits/underscores only;
+> folders with unsafe names are skipped with a warning). Other root PNGs map as
+> `<name>.png` → `<name>`.
+
+### What the script does
+
 - Scans every character under `resources/gfx/pets/` (up to 5; folder names limited to
   ASCII letters/digits/underscores);
 - **Auto-resizes** off-size frames to 256×256, overwriting in place (asks for
   confirmation interactively; auto-confirms in non-interactive runs; skipped with a
   warning if Pillow is not installed);
 - Filters Discord duplicate downloads (filenames with a ` #number` suffix);
+- Checks frame-number continuity (prints a `[!]` warning on gaps — the animation
+  would skip a beat there);
 - Rebuilds the multi-character manifest `internalreactionoverlay_frames.lua`.
+
+### Reading the output
+
+The script prints character discovery, resize/verification results and per-animation
+frame counts, e.g.:
+```
+发现 2 个角色（上限 5）：Angle, TangTang
+校验通过：全部 231 个动画帧均为 256×256，可直接进游戏使用。
+internalreactionoverlay_frames.lua 已重建(角色池格式, 2 个角色):
+  [Angle] 18 个动画 / 89 帧:
+      Medicine      5 帧
+      activity      5 帧
+      ...
+生成位置: <mod root>\internalreactionoverlay_frames.lua
+```
+
+### Parameters
 
 > Default resize mode is `contain` (fit + transparent padding, no distortion/crop);
 > use `--mode cover|stretch` to change, `--size 512` for another edge length,
@@ -277,9 +319,10 @@ The script:
 
 ## Missing Assets / Incomplete Characters → Graceful Degradation
 
-- The active character lacks an animation key (e.g. `idle3/` deleted) → with
-  `petFallback` on, the same animation is borrowed from other characters in the
-  pool; with it off, features referencing it are **auto-disabled**, error-free:
+- The active character lacks an animation key (e.g. `idle3/` deleted) → by default
+  the event referencing it does **not trigger** (auto-disabled, error-free) and the
+  pet keeps its idle/normal animation — no borrowing. With `petFallback` enabled,
+  the same animation is borrowed from other characters in the pool instead:
   - a missing idle animation → removed from the idle pool
   - a missing half-health sprite → falls back to `main_static`
   - a missing item-quality animation → that quality tier stays silent, the rest work
@@ -299,9 +342,8 @@ internalreactionoverlay+/
 ├── resize_256.py                     # batch-resize any assets to 256×256 (outputs to resized_256/, originals untouched)
 ├── metadata.xml                      # mod metadata
 ├── icon.png
-├── README.md / README_en.md          # bilingual docs
+├── README.md / README_en.md          # bilingual docs (incl. gen_anim.py deployment guide)
 ├── Angle.zip / TangTang.zip          # character asset archives (backup)
-├── 一键部署工具使用.txt               # asset script usage notes (Chinese)
 └── resources/gfx/
     ├── overlay_frame_template.anm2   # frame template (single 256×256 frame)
     └── pets/                         # ★ character asset pool (one folder per character, max 5)
@@ -348,9 +390,9 @@ classification). Errors from other mods' `PreEntityTakeDamage` callbacks cannot
 skip this mod thanks to the EARLY priority.
 
 **Q: After switching characters some animation doesn't play?**
-A: The active character is missing that asset. Enable
-"缺素材时借用其它角色" (`petFallback`) in MCM to borrow automatically, otherwise
-the feature is auto-disabled.
+A: The active character is missing that asset. By default it is not borrowed — the
+event doesn't trigger and the pet stays idle. To borrow it across characters,
+enable "缺素材时借用其它角色" (`petFallback`) in MCM.
 
 **Q: After replacing assets the pet doesn't show at all?**
 A: Most likely the new assets are **not 256×256** (and inconsistent across frames) —
