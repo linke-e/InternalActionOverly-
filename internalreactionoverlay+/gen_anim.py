@@ -13,6 +13,13 @@ gen_anim.py —— 重建动画帧清单 internalreactionoverlay_frames.lua
   3. 过滤 Discord 附件重复帧（文件名带 " #数字" 后缀，如 "xxx_000 #50548.png"）
   4. 重新生成 internalreactionoverlay_frames.lua（新格式：pets 角色名列表 + frames 按角色嵌套）
   5. 兼容回退：若无 pets/ 目录但有旧版 overlay_anim/ 目录，按旧格式（单角色）生成
+  6. 【素材完整性检查】每个角色必须有 main.png（生成 main_static 常态待机贴图，
+     缺失时桌宠主状态无图可显示，脚本以非零码退出并提示疑似笔误文件名）；
+     另检查：根 PNG 与保留名拼写近似（如 mian.png ~ main.png）、空动画文件夹、
+     config.lua 引用键缺失（该角色哪些事件不触发）
+  7. 【动画时长校验表格】按当前 config 播放节奏（animHold/animFps/animSpeed）
+     估算每个动画的实际时长（帧数 × 每帧停留），以表格形式输出校验结果，
+     超过 DURATION_WARN_SECONDS 的动画提示"当前配置下动画时间过长"
 
 用法 (PowerShell):
   本脚本应放在模组根目录（与 main.lua 同级）。模组目录名含空格，
@@ -63,6 +70,15 @@ LEGACY_ANIM_DIR_REL = os.path.join("resources", "gfx", "overlay_anim")
 MAX_PETS = 5
 # 以撒资源加载对非 ASCII/特殊字符路径支持差，角色名（文件夹名）限制为安全字符
 PET_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+# 保留根 PNG：文件名固定映射为专用动画键，拼写错误会导致必备键缺失
+# （真实事故：main.png 误存为 mian.png -> 生成无人引用的键 "mian"，
+#   必备键 main_static 缺失，切到该角色时桌宠主状态完全无图）
+ROOT_RESERVED = ("main.png", "main_sad.png", "death.png")
+# config.lua 中的动态哨兵键（main.lua 对 item 状态特殊处理，不要求角色有该键）
+CONFIG_SENTINEL_KEYS = {"item_auto"}
+# 单个动画时长警告阈值（秒）：帧数 × animHold ÷ animSpeed 超过该值提示过长
+DURATION_WARN_SECONDS = 15.0
 
 
 def find_mod_root(start):
@@ -229,6 +245,206 @@ def warn_frame_gaps(per_pet_grouped):
                           "（动画播放到此处会跳帧；请补齐源素材后重跑本脚本）"
                           % (pet_name, key,
                              ", ".join("_%03d" % n for n in missing)))
+
+
+def _levenshtein(a, b, cap=3):
+    """编辑距离（超过 cap 提前返回 cap+1；仅用于短文件名的拼写近似检测）。"""
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]
+
+
+def _pet_root_pngs(pet_dir):
+    """角色根目录的 PNG 文件名集合（小写文件名，不含子文件夹内容）。"""
+    if not pet_dir or not os.path.isdir(pet_dir):
+        return []
+    return [f for f in sorted(os.listdir(pet_dir))
+            if f.lower().endswith(".png") and os.path.isfile(os.path.join(pet_dir, f))]
+
+
+def check_config_refs(root):
+    """提取 internalreactionoverlay_config.lua 引用的动画键 -> [(键, 行号)]。
+
+    覆盖：events/main.entries/idle.entries 的 key=、main.sadStatic、
+    wink.animKey/sadAnimKey、itemQuality.animKeys 的 [N]=。
+    """
+    cfg = os.path.join(root, "internalreactionoverlay_config.lua")
+    if not os.path.isfile(cfg):
+        return []
+    ref_re = re.compile(
+        r'(?:key|sadStatic|animKey|sadAnimKey|\[\s*\d+\s*\])\s*=\s*"([^"]+)"')
+    refs = []
+    with open(cfg, encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            # 剔除 Lua 行注释（config 注释里有 key = "动画键" 之类的示例，勿误抓）
+            code = line.split("--", 1)[0]
+            for m in ref_re.finditer(code):
+                refs.append((m.group(1), ln))
+    return refs
+
+
+def parse_anim_timing(root):
+    """提取 internalreactionoverlay_config.lua 的播放节奏：
+    返回 (animHold 表, animFps, animSpeed)。"""
+    cfg = os.path.join(root, "internalreactionoverlay_config.lua")
+    holds, fps, speed = {}, 15.0, 1.0
+    if not os.path.isfile(cfg):
+        return holds, fps, speed
+    hold_re = re.compile(r'^\s*([A-Za-z_]\w*)\s*=\s*([0-9.]+)')
+    in_hold = False
+    with open(cfg, encoding="utf-8") as f:
+        for line in f:
+            code = line.split("--", 1)[0]
+            if not code.strip():
+                continue
+            if re.search(r'\banimHold\s*=\s*\{', code):
+                in_hold = True
+                continue
+            if in_hold:
+                if "}" in code:
+                    in_hold = False
+                    continue
+                m = hold_re.match(code)
+                if m:
+                    try:
+                        holds[m.group(1)] = float(m.group(2))
+                    except ValueError:
+                        pass
+                continue
+            m = re.search(r'\banimFps\s*=\s*([0-9.]+)', code)
+            if m:
+                try:
+                    fps = float(m.group(1))
+                except ValueError:
+                    pass
+            m = re.search(r'\banimSpeed\s*=\s*([0-9.]+)', code)
+            if m:
+                try:
+                    speed = float(m.group(1))
+                except ValueError:
+                    pass
+    if speed <= 0:
+        speed = 1.0
+    if fps <= 0:
+        fps = 15.0
+    return holds, fps, speed
+
+
+def report_anim_durations(root, per_pet_grouped):
+    """按当前 config 播放节奏估算每个动画的时长并输出校验表格（超长警告）。
+
+    时长 = 帧数 × 每帧停留(animHold，未配置用 60/animFps 兜底) ÷ animSpeed；
+    60 渲染帧 = 1 秒。事件动画已无固定时长截断（pending 播完即止），
+    因此该时长即玩家实际看到的动画时长——过长说明 animHold 与素材帧数不匹配。
+    """
+    holds, fps, speed = parse_anim_timing(root)
+    print("=" * 60)
+    print("[检查] 动画时长（帧数 × animHold ÷ animSpeed，60 帧 = 1 秒；"
+          "> %g 秒警告）" % DURATION_WARN_SECONDS)
+    for name in sorted(per_pet_grouped):
+        print()
+        print("人物：%s" % name)
+        print("| 动画名 | 动画帧数 | 当前配置动画时长 | 结果 |")
+        print("| --- | --- | --- | --- |")
+        for key in sorted(per_pet_grouped[name]):
+            n = len(per_pet_grouped[name][key])
+            hold = holds.get(key)
+            if not hold or hold <= 0:
+                hold = 60.0 / fps
+            dur = n * hold / speed / 60.0
+            verdict = "成功"
+            if dur > DURATION_WARN_SECONDS:
+                verdict = "警告：当前配置下动画时间过长"
+            print("| %s | %d | %.1fs | %s |" % (key, n, dur, verdict))
+    print("=" * 60)
+
+
+def check_pet_assets(root, per_pet_grouped, pet_dirs):
+    """角色素材完整性检查（收集 grouped 后、写清单前调用）。
+
+    拦截文件名笔误类事故（如 main.png 误存为 mian.png：生成无人引用的键
+    「mian」，必备键 main_static 缺失，桌宠主状态无图可显示）。清单照常
+    生成（不阻塞其它角色），但存在硬错误时调用方应以非零码退出。
+    返回硬错误数（>0 = 有角色缺 main.png）。
+    """
+    if not per_pet_grouped:
+        return 0
+    hard = 0
+    refs = check_config_refs(root)
+    refs = [(k, ln) for k, ln in refs if k not in CONFIG_SENTINEL_KEYS]
+    print("=" * 60)
+    print("[检查] 角色素材完整性（必备贴图 / 文件名笔误 / config 引用）")
+    for name in sorted(per_pet_grouped):
+        grouped = per_pet_grouped[name]
+        pet_dir = pet_dirs.get(name)
+        keys = set(grouped)
+
+        # 1) 必备键：main_static（由 main.png 生成）缺失 = 桌宠主状态无图，硬错误
+        if "main_static" not in keys:
+            hard += 1
+            print("  [X] 角色「%s」缺少 main.png（生成 main_static 常态待机贴图）" % name)
+            print("      后果：切到该角色时主状态无图可显示，事件动画播完即消失")
+            suspects = [fn for fn in _pet_root_pngs(pet_dir)
+                        if fn.lower() not in ROOT_RESERVED
+                        and any(_levenshtein(os.path.splitext(fn.lower())[0],
+                                             os.path.splitext(res)[0]) <= 2
+                                for res in ROOT_RESERVED)]
+            for fn in suspects:
+                best = min(ROOT_RESERVED,
+                           key=lambda r: _levenshtein(os.path.splitext(fn.lower())[0],
+                                                      os.path.splitext(r)[0]))
+                d = _levenshtein(os.path.splitext(fn.lower())[0], os.path.splitext(best)[0])
+                print("      疑似笔误：「%s」与保留名「%s」仅差 %d 字符——"
+                      "重命名为 %s 后重跑本脚本" % (fn, best, d, best))
+        # 2) 半血常态贴图：缺失可降级（回退 main_static），警告
+        if "main_sad" not in keys:
+            print("  [!] 角色「%s」缺少 main_sad.png（半血常态贴图；缺失时半血回退 main_static）"
+                  % name)
+        # 3) 孤儿根 PNG：既非保留名、也不被 config 引用，且与保留名拼写近似
+        #    -> 大概率是文件名笔误（生成的键无人引用，图永远不会被显示）
+        for fn in _pet_root_pngs(pet_dir):
+            lp = fn.lower()
+            if lp in ROOT_RESERVED:
+                continue
+            stem = os.path.splitext(lp)[0]
+            if any(k == stem for k, _ in refs):
+                continue   # 键被 config 引用，是有意放置的单帧动画
+            for res in ROOT_RESERVED:
+                d = _levenshtein(stem, os.path.splitext(res)[0])
+                if d <= 2:
+                    print("  [!] 角色「%s」根 PNG「%s」与保留名「%s」仅差 %d 字符且不被 "
+                          "config 引用——疑似拼写错误（该图不会被显示）"
+                          % (name, fn, res, d))
+                    break
+        # 4) 空动画文件夹（无任何 PNG，会被静默忽略，容易误以为动画已生效）
+        if pet_dir and os.path.isdir(pet_dir):
+            for d in sorted(os.listdir(pet_dir)):
+                full = os.path.join(pet_dir, d)
+                if os.path.isdir(full) and not any(
+                        f.lower().endswith(".png") for f in os.listdir(full)):
+                    print("  [!] 角色「%s」动画文件夹「%s」为空（无 PNG，不会进清单）"
+                          % (name, d))
+        # 5) config 引用缺失报告：该角色这些事件不触发（可开 petFallback 借用）
+        missing = []
+        for k, ln in refs:
+            if k not in keys and all(k != mk for mk, _ in missing):
+                missing.append((k, ln))
+        if missing:
+            lines = ", ".join("L%d" % ln for _, ln in missing[:8])
+            print("  [i] 角色「%s」缺少 config.lua 引用的动画键: %s" % (
+                name, ", ".join(k for k, _ in missing)))
+            print("      该角色这些事件不触发/不显示；开 petFallback 可借用其它角色；"
+                  "引用位置: %s%s" % (lines, "…" if len(missing) > 8 else ""))
+    print("=" * 60)
+    return hard
 
 
 def check_and_resize(frames, size, mode, auto_yes):
@@ -412,6 +628,20 @@ def main():
             print("错误：角色素材池里没有找到任何 PNG 帧。")
             return 1
 
+    # 角色素材完整性检查（缺 main.png / 根 PNG 笔误 / 空动画文件夹 / config 引用缺失）；
+    # 清单照常生成，但存在硬错误时以非零码退出
+    if legacy_mode:
+        hard_errors = check_pet_assets(root, {"default": grouped}, {"default": anim_dir})
+    else:
+        hard_errors = check_pet_assets(
+            root, per_pet_grouped, {name: pet_dir for name, pet_dir, _ in pets})
+
+    # 动画时长校验表格（帧数 × animHold ÷ animSpeed，超长警告；仅提示不退出）
+    if legacy_mode:
+        report_anim_durations(root, {"default": grouped})
+    else:
+        report_anim_durations(root, per_pet_grouped)
+
     # 缩放（交互运行按 y/回车 缩放；脚本/非交互运行自动缩放；Pillow 未安装则跳过）
     if not legacy_mode:
         warn_frame_gaps(per_pet_grouped)
@@ -453,6 +683,10 @@ def main():
             for key in sorted(grouped):
                 print("      %-12s %2d 帧" % (key, len(grouped[key])))
     print("生成位置: %s" % out)
+    if hard_errors:
+        print("[X] 共 %d 个角色缺少 main.png（常态待机贴图）——按上方「[检查]」提示修复后重跑本脚本。"
+              % hard_errors)
+        return 1
     return 0
 
 

@@ -18,6 +18,9 @@ local mod = RegisterMod("InternalReactionOverlay", 1)
 --  配置与帧清单
 -- ---------------------------------------------------------
 local config = require("internalreactionoverlay_config")
+-- 每桌宠角色独立配置模块：config 表是「当前角色的活动视图」，
+-- 切换角色时整体换血；MCM/状态机照旧读写 config，无需感知 profile。
+local Profiles = require("internalreactionoverlay_profiles")
 
 local function dlog(msg)
     Isaac.DebugString("[InternalReactionOverlay] " .. msg .. "\n")
@@ -54,6 +57,45 @@ function mod:GetPet()
     return mod.petList[1]
 end
 
+-- ---------------------------------------------------------
+--  每角色独立配置（profile）仓库
+--  mod.petProfiles[角色名] = profile（出厂默认的个性化覆盖）。
+--  新角色首次被选中时用出厂默认（defaultProfile）惰性生成。
+-- ---------------------------------------------------------
+-- 出厂默认快照：必须在 SanitizeConfig / 存档应用之前捕获，
+-- 保证是 config.lua 的原始值而非运行期被改写后的值。
+mod.defaultProfile = Profiles.CaptureFromConfig(config)
+mod.petProfiles = {}
+-- 活动视图当前归属的角色名（SaveActiveProfile 以它为准落仓，
+-- 与 config.activePet 指针解耦：即使指针被手改也不至于把旧视图的
+-- 调整记到新角色名下）
+mod.activeProfilePet = config.activePet
+
+-- 取角色 profile（惰性创建：新角色/存档缺失时回退出厂默认）
+function mod:GetProfile(name)
+    local p = mod.petProfiles[name]
+    if type(p) ~= "table" then
+        p = Profiles.DeepCopy(mod.defaultProfile)
+        mod.petProfiles[name] = p
+    end
+    return p
+end
+
+-- 当前角色的活动 config 值写回其 profile（切换角色前/存档前调用）
+function mod:SaveActiveProfile()
+    local name = mod.activeProfilePet
+    if type(name) ~= "string" or not mod.petFrames[name] then return end
+    mod.petProfiles[name] = Profiles.CaptureFromConfig(config, mod.petProfiles[name])
+end
+
+-- 当前角色 profile 应用到 config（切换视图：之后 MCM/状态机读到的全是该角色的值）
+function mod:LoadActiveProfile()
+    local name = config.activePet
+    if type(name) ~= "string" or not mod.petFrames[name] then return end
+    Profiles.ApplyToConfig(mod:GetProfile(name), config)
+    mod.activeProfilePet = name
+end
+
 -- 取动画键的帧表：先查当前角色；缺失且 petFallback 开启时按素材池顺序
 -- 回退到其它角色的同名动画（角色素材不全也能跑）。
 function mod:GetFrames(animKey)
@@ -76,13 +118,19 @@ function mod:GetFrames(animKey)
     return nil
 end
 
--- 切换桌宠角色（校验存在性；刷新缓存与当前动画并存档）
+-- 切换桌宠角色（校验存在性；换上该角色专属配置；刷新缓存与当前动画并存档）。
+-- 每个角色的全部动画/外观设置（profile）互相独立：
+--   1) 当前角色的最新调整写回其 profile；
+--   2) 应用目标角色的 profile 到 config；
+--   3) 按新角色素材重校验并重启动画。
 function mod:SetPet(name)
     if type(name) ~= "string" or not mod.petFrames[name] then return false end
     if config.activePet == name then return true end
+    mod:SaveActiveProfile()
     config.activePet = name
+    mod:LoadActiveProfile()
     mod:RefreshPet()
-    dlog("切换桌宠角色: " .. name)
+    dlog("切换桌宠角色: " .. name .. "（已应用该角色独立配置）")
     return true
 end
 
@@ -159,6 +207,10 @@ function mod:SanitizeConfig()
                 if type(e) == "table" and hasKey(e.key) then return true end
             end
             return false
+        elseif stateKey == "wink" then
+            -- 眨眼不属于 states 表（开关在 config.wink.enabled），单独判定
+            local wc = (type(config.wink) == "table" and config.wink) or {}
+            return hasKey(wc.animKey) or hasKey(wc.sadAnimKey)
         else
             local spec = config.events and config.events[stateKey]
             for _, k in ipairs(eventKeys(spec)) do
@@ -178,11 +230,16 @@ function mod:SanitizeConfig()
     end
 
     -- 0.5) 恢复段：此前因素材缺失被自动禁用的状态，素材恢复可用后重新开启
-    --     （_autoDisabled 是 config 表内临时标记，不写入存档）
+    --     （_autoDisabled 是 config 表内临时标记，不写入存档/profile）
     if type(config._autoDisabled) ~= "table" then config._autoDisabled = {} end
     for stateKey in pairs(config._autoDisabled) do
         if stateHasAssets(stateKey) then
-            if config.states[stateKey] == false then
+            if stateKey == "wink" then
+                if config.wink and config.wink.enabled == false then
+                    config.wink.enabled = true
+                    dlog("素材已可用，自动恢复: wink")
+                end
+            elseif config.states[stateKey] == false then
                 config.states[stateKey] = true
                 dlog("素材已可用，自动恢复状态: " .. tostring(stateKey))
             end
@@ -234,11 +291,14 @@ function mod:SanitizeConfig()
         end
     end
 
-    -- 4) main：过滤 entries；sadStatic 缺失 -> 置 nil（渲染时回退 main_static）
+    -- 4) main：从原始池过滤 entries（会话内反复切角色不会越滤越少）；
+    --    sadStatic 缺失 -> 置 nil（渲染时回退 main_static）
     if type(config.main) == "table" then
         if type(config.main.entries) == "table" and #config.main.entries > 0 then
+            -- 备份原始池（首次），切角色后仍从完整池按新角色素材重新过滤
+            config.main._origEntries = config.main._origEntries or config.main.entries
             local kept = {}
-            for _, e in ipairs(config.main.entries) do
+            for _, e in ipairs(config.main._origEntries) do
                 if type(e) == "table" and hasKey(e.key) then
                     kept[#kept + 1] = e
                 end
@@ -255,12 +315,13 @@ function mod:SanitizeConfig()
         end
     end
 
-    -- 5) wink：主/半血眨眼键都缺失 -> 禁用眨眼
+    -- 5) wink：主/半血眨眼键都缺失 -> 禁用眨眼（打临时标记，素材恢复后自动重开）
     if config.wink and config.wink.enabled then
         local okWink = hasKey(config.wink.animKey)
         local okWink1 = hasKey(config.wink.sadAnimKey)
         if not okWink and not okWink1 then
             config.wink.enabled = false
+            config._autoDisabled.wink = true
             dlog("素材缺失，已禁用眨眼")
         end
     end
@@ -301,11 +362,13 @@ mod.curFrame = 1         -- 当前帧号
 mod.frameTimer = 0       -- 帧计时（每 frameDelay 游戏帧换 1 动画帧）
 mod.animMode = "loop"    -- "loop" 循环 / "once" 播完即止
 
--- 事件计时（触发闩锁；动画自身决定播放时长）
+-- 事件触发闩锁（pending）：事件发生置 true，对应动画 once 播完才清——
+-- 动画播多长状态就持续多久（帧数 × animHold ÷ animSpeed），无固定时长截断；
+-- 被更高优先级动画打断时保持 pending，顺延到其播完后重新完整播放
 
-mod.cardpillTimer = 0   -- 使用卡牌/药丸
-mod.activeItemTimer = 0 -- 使用主动道具/副主动道具（药丸/卡牌不走此计时）
-mod.hurtTimer = 0       -- 受击（触发类型见 config.hurt.damageFlags）
+mod.cardpillPending = false   -- 使用卡牌/药丸
+mod.activePending = false     -- 使用主动道具/副主动道具（药丸/卡牌不走此标记）
+mod.hurtPending = false       -- 受击（触发类型见 config.hurt.damageFlags）
 
 -- 抑制标记：once 动画播完后，若其触发条件仍然持续（如 Boss 房/半血），
 -- 抑制该状态直到条件消失，避免立刻重新触发（除 main 外都只播一次）
@@ -342,12 +405,24 @@ local function frameDelay(animKey)
     return math.max(1, math.floor(hold / speed))
 end
 
--- 事件状态时长（渲染帧）：按 1/animSpeed 缩放——animSpeed<1 时动画变慢，
--- 固定帧数会在动画播完前结束状态将其截断，故时长同步拉长
-local function eventDuration(base)
-    local speed = tonumber(config.animSpeed) or 1.0
-    if speed <= 0 then speed = 1.0 end
-    return math.max(1, math.floor(base / speed + 0.5))
+-- ---------------------------------------------------------
+--  动画优先级（数值越大越优先，只有更高优先级能打断正在播放的动画）：
+--    item4(90) > half(80) > item3(70) > item2(60) > item1(50) > item0(40)
+--    > cardpill/Medicine(30) > active/Activity(20) > hurt(10) = boss(10)
+--    > idle(5) > wink(2) > main(0，兜底不参与扫描)
+--  item 状态按当前房间最高质量动态插入序列，因此 half 与 item 的相对
+--  优先级随质量变化。同级（hurt = boss）不互相打断：先播者保持，
+--  另一个顺延到其播完后再响应。
+-- ---------------------------------------------------------
+local STATE_PRIO = {
+    half = 80, cardpill = 30, active = 20, hurt = 10, boss = 10, idle = 5, wink = 2,
+}
+local ITEM_PRIO = { [0] = 40, [1] = 50, [2] = 60, [3] = 70, [4] = 90 }
+local function statePrio(key, itemQ)
+    if key == "item" then
+        return ITEM_PRIO[itemQ] or 40
+    end
+    return STATE_PRIO[key] or 0
 end
 
 -- 开始播放某动画（从第 1 帧）
@@ -538,7 +613,7 @@ end
 -- 使用卡牌 -> 触发卡牌/药丸动画（Medicine）
 function mod:OnUseCard(cardType, player, useFlags)
     if config.states.cardpill then
-        mod.cardpillTimer = eventDuration(config.cardpillDuration)
+        mod.cardpillPending = true   -- once 播完自动消费，无固定时长
     end
     return nil   -- 不拦截卡牌使用
 end
@@ -546,7 +621,7 @@ end
 -- 使用药丸 -> 触发卡牌/药丸动画（Medicine）
 function mod:OnUsePill(pillColor, player, useFlags)
     if config.states.cardpill then
-        mod.cardpillTimer = eventDuration(config.cardpillDuration)
+        mod.cardpillPending = true
     end
     return nil   -- 不拦截药丸使用
 end
@@ -557,7 +632,7 @@ end
 -- 药丸走 MC_USE_PILL、卡牌走 MC_USE_CARD，天然不会命中本回调。
 function mod:OnUseActiveItem(collectibleType, rng, player, useFlags, activeSlot, varData)
     if config.states.active then
-        mod.activeItemTimer = eventDuration(config.activeItemDuration)
+        mod.activePending = true
     end
     return nil   -- 不拦截主动道具使用
 end
@@ -651,7 +726,7 @@ function mod:OnPlayerTakeDmg(entity, amount, damageFlags, source, countdownFrame
         trigger = mod:IsMonsterDamage(source, damageFlags)
     end
     if trigger then
-        mod.hurtTimer = eventDuration((config.hurt and config.hurt.duration) or 90)
+        mod.hurtPending = true   -- once 播完自动消费，无固定时长；每次受伤都会置位
     end
     return nil   -- 不拦截伤害
 end
@@ -688,14 +763,18 @@ function mod:OnRender()
         return ok and v or def
     end
 
-    -- 计算各状态激活与否
+    -- 当前房间道具最高质量（item 状态激活判定 + 动态优先级共用）
+    local curQ = safe(function() return mod:ComputeItemQuality() end, nil)
+
+    -- 计算各状态激活与否（hurt/cardpill/active 为 pending 闩锁：
+    -- 事件发生置位，动画 once 播完才消费，无固定时长截断）
     local states = {
 
-        hurt     = config.states.hurt     and mod.hurtTimer > 0,
-        cardpill = config.states.cardpill and mod.cardpillTimer > 0,
-        active   = config.states.active   and mod.activeItemTimer > 0,
+        hurt     = config.states.hurt     and mod.hurtPending == true,
+        cardpill = config.states.cardpill and mod.cardpillPending == true,
+        active   = config.states.active   and mod.activePending == true,
         boss     = config.states.boss     and safe(function() return mod:ComputeBossFight() end, false),
-        item     = config.states.item     and mod:ComputeItemQuality() ~= nil,
+        item     = config.states.item     and curQ ~= nil,
         half     = config.states.half     and safe(function() return mod:ComputeHalfHealth(player) end, false),
         idle     = config.states.idle     and mod.idlePlaying,
         wink     = config.wink and config.wink.enabled and mod.winkPlaying,
@@ -710,7 +789,6 @@ function mod:OnRender()
 
     -- 道具质量变化：若当前最高质量与已播放的不同，解除抑制以便重触发
     if config.itemQuality and config.itemQuality.enabled then
-        local curQ = mod:ComputeItemQuality()
         if curQ and mod.itemPlayedQ and curQ ~= mod.itemPlayedQ then
             mod.suppressed["item"] = nil
         end
@@ -719,20 +797,16 @@ function mod:OnRender()
         end
     end
 
-    -- 按优先级取第一个激活且未被抑制的状态（main 是兜底不参与扫描）
-    -- 道具动画锁定：item 动画播放期间锁定当前状态直到播完，
-    -- 不被受击/卡牌等更高优先级事件打断（它们顺延到动画结束后再响应）。
-    -- 必须同时要求 states.item 仍激活：loop+lock 组合下若道具被捡完/
-    -- 换房后条件消失，锁定必须放行，否则状态机永久卡死在 item 动画。
-    local topKey = nil
-    local itemLocked = (mod.curState == "item" and mod.curAnimKey ~= nil
-        and config.itemQuality and config.itemQuality.lock and states.item)
-    if itemLocked then
-        topKey = "item"
-    else
-        for _, key in ipairs(config.priority) do
-            if key == "main" then break end
-            if states[key] and not mod.suppressed[key] then topKey = key; break end
+    -- 按动态优先级取最高激活且未被抑制的状态（main 是兜底不参与扫描）。
+    -- 只有更高优先级能打断正在播放的动画；同级（hurt = boss）不互相打断，
+    -- 落选的 pending 事件顺延，当前动画播完后重新完整播放。
+    local topKey, topPrio = nil, -1
+    for key, on in pairs(states) do
+        if on and not mod.suppressed[key] then
+            local p = statePrio(key, curQ)
+            if p > topPrio or (p == topPrio and key == mod.curState) then
+                topKey, topPrio = key, p
+            end
         end
     end
 
@@ -745,7 +819,7 @@ function mod:OnRender()
             mod:StartAnim(mod:WinkKey(), "once")   -- 眨眼循环（独立于 idle；动画随血量切换）
         elseif topKey == "item" then
             -- 道具质量事件：按房间最高质量动态选择 item0~item4
-            local q = mod:ComputeItemQuality()
+            local q = curQ
             local ak = q and mod:ItemQualityAnimKey(q)
             if ak then
                 mod:StartAnim(ak, mod:ItemPlaybackMode())
@@ -810,10 +884,9 @@ function mod:OnRender()
         end
     else
         -- 同一事件状态延续：推进动画
-        -- item 锁定期间：房间最高质量变化时切换到新质量的动画
-        -- （loop 模式常驻展示最新质量；once 模式下也会打断当前遍重播新质量）
+        -- 房间最高质量变化时切换到新质量的动画（优先级随质量变化：
+        -- loop 模式常驻展示最新质量；once 模式下也会打断当前遍重播新质量）
         if topKey == "item" and config.itemQuality and config.itemQuality.enabled then
-            local curQ = mod:ComputeItemQuality()
             if curQ and curQ ~= mod.itemPlayedQ then
                 local ak = mod:ItemQualityAnimKey(curQ)
                 if ak then
@@ -824,30 +897,26 @@ function mod:OnRender()
         end
         local still = mod:AdvanceAnim()
         if not still then
-            -- once 播完 -> 清除该事件闩锁，抑制该状态直到条件消失，立即回 main
-            -- 注：death 为锁定状态（loop 播放 death.png），不进入此分支
-            if topKey == "cardpill" then mod.cardpillTimer = 0
-            elseif topKey == "active" then mod.activeItemTimer = 0
-            elseif topKey == "hurt" then mod.hurtTimer = 0
+            -- once 播完 -> 消费该状态，立即回 main：
+            --   pending 型（hurt/cardpill/active）：清闩锁（不置抑制——
+            --     pending 无超时，若被抑制且 pending 恒真会永久卡死；
+            --     连续受伤在下一次回调重新置位，自然重新触发）
+            --   条件型（boss/half/item）：置抑制，条件消失后才可再触发
+            if topKey == "cardpill" then mod.cardpillPending = false
+            elseif topKey == "active" then mod.activePending = false
+            elseif topKey == "hurt" then mod.hurtPending = false
             elseif topKey == "idle" then mod.idlePlaying = false
             elseif topKey == "wink" then
                 -- 眨眼播完：重置随机间隔，等待下一次眨眼（仅满血）
                 mod.winkPlaying = false
                 mod.winkTimer = mod:NextWinkDelay()
-            end
-            if topKey ~= "idle" and topKey ~= "wink" then
+            else
                 mod.suppressed[topKey] = true
             end
             mod.curState = nil
             mod:StartMain()
         end
     end
-
-    -- 事件计时递减（每渲染帧 -1）
-
-    if mod.cardpillTimer > 0 then mod.cardpillTimer = mod.cardpillTimer - 1 end
-    if mod.activeItemTimer > 0 then mod.activeItemTimer = mod.activeItemTimer - 1 end
-    if mod.hurtTimer > 0 then mod.hurtTimer = mod.hurtTimer - 1 end
 
     -- 计算叠加图位置（物理像素坐标系）
     local physW, physH = 512, 320
@@ -887,6 +956,19 @@ function mod:OnRender()
     local posX = config.margin
     local posY = sh - efh + botPadScaled - config.offsetY
 
+    -- 遮罩强度 + 高光强度 + 透明度：渲染前调制桌宠颜色，对抗游戏滤镜过曝。
+    --   遮罩强度  = 乘法压暗（比例降亮度，暗部几乎不变）      -> Color RGB 乘法分量
+    --   高光强度  = 线性减亮（统一下移，过曝亮部下降最明显）  -> Color RGB 加法分量(负)
+    --   透明度    = 整体不透明度                              -> Color alpha 分量
+    local mask = tonumber(config.maskStrength) or 0
+    if mask < 0 then mask = 0 elseif mask > 1 then mask = 1 end
+    local bright = 1 - mask
+    local hl = tonumber(config.highlightStrength) or 0
+    if hl < 0 then hl = 0 elseif hl > 1 then hl = 1 end
+    local opacity = tonumber(config.opacity)
+    if type(opacity) ~= "number" then opacity = 1 end
+    if opacity < 0 then opacity = 0 elseif opacity > 1 then opacity = 1 end
+
     -- 限制在屏幕内（素材尺寸异常时也不至于整张跑到屏外）
     local drawX = math.min(math.max(0, posX), math.max(0, sw - efw))
     local drawY = math.min(math.max(0, posY), math.max(0, sh - efh))
@@ -894,6 +976,7 @@ function mod:OnRender()
     if s then
         local ok, err = pcall(function()
             s.Scale = Vector(scale, scale)
+            s.Color = Color(bright, bright, bright, opacity, -hl, -hl, -hl)
             s:Update()
             s:Render(Vector(drawX, drawY), Vector.Zero, Vector.Zero)
         end)
@@ -959,9 +1042,9 @@ function mod:OnPlayerInit(player)
     mod.curFrame = 1
     mod.frameTimer = 0
 
-    mod.cardpillTimer = 0
-    mod.activeItemTimer = 0
-    mod.hurtTimer = 0
+    mod.cardpillPending = false
+    mod.activePending = false
+    mod.hurtPending = false
     mod.suppressed = {}
     mod.itemPlayedQ = nil
     mod.itemGraceTimer = 0
@@ -1019,113 +1102,65 @@ local function keyName(k)
     return KEY_NAMES[k] or ("KEY#" .. tostring(k))
 end
 
--- 序列化：除 states/位置外，MCM 可调的全部配置项一并持久化，
--- 保证游戏内调整重启后不丢
+-- 序列化（存档格式 v2）：
+--   * 全局项：总开关/快捷键/调试行/素材借用开关（所有角色共享）
+--   * profiles：每角色一份独立配置（键集见 internalreactionoverlay_profiles.lua）
+-- 当前角色的最新调整先写回 profile，再整体入库，保证 MCM 改动不丢。
 local function serializeSettings()
-    local st = {}
-    for k, v in pairs(config.states) do st[k] = v end
-    local w = config.wink or {}
+    mod:SaveActiveProfile()
     return {
-        globalEnabled    = mod.enabled,
-        toggleKey        = config.toggleKey,
-        states           = st,
-        activePet        = config.activePet,
-        petFallback      = config.petFallback,
-        scale            = config.scale,
-        margin           = config.margin,
-        offsetY          = config.offsetY,
-        topData          = config.topData,
-        animSpeed        = config.animSpeed,
-        animFps          = config.animFps,
-        winkEnabled      = w.enabled,
-        winkMode         = w.mode,
-        winkDelayMin     = w.delayMin,
-        winkDelayMax     = w.delayMax,
-        winkDelayFixed   = w.delayFixed,
-        winkSadMode      = w.sadMode,
-        winkSadDelayMin  = w.sadDelayMin,
-        winkSadDelayMax  = w.sadDelayMax,
-        winkSadDelayFixed = w.sadDelayFixed,
-        idleMinMainTime  = config.idle and config.idle.minMainTime,
-        idleChance       = config.idle and config.idle.triggerChancePerSec,
-        hurtDuration     = config.hurt and config.hurt.duration,
-        hurtNoPenalty    = config.hurt and config.hurt.ignoreNoPenalties,
-        hurtMonster      = config.hurt and config.hurt.monsterDamage,
-        cardpillDuration = config.cardpillDuration,
-        activeItemDuration = config.activeItemDuration,
-        iqEnabled        = config.itemQuality and config.itemQuality.enabled,
-        iqMode           = config.itemQuality and config.itemQuality.mode,
-        iqLock           = config.itemQuality and config.itemQuality.lock,
-        iqGraceFrames    = config.itemQuality and config.itemQuality.graceFrames,
-        hhThreshold      = config.halfHealth and config.halfHealth.threshold,
-        hhSoulHearts     = config.halfHealth and config.halfHealth.countSoulHearts,
-        hhOneThreshold   = config.halfHealth and config.halfHealth.oneHealthThreshold,
+        version       = 2,
+        globalEnabled = mod.enabled,
+        toggleKey     = config.toggleKey,
+        topData       = config.topData,
+        petFallback   = config.petFallback,
+        activePet     = config.activePet,
+        profiles      = mod.petProfiles,
     }
 end
 
 local function applySettings(s)
     if type(s) ~= "table" then return end
+
+    -- 全局项（所有角色共享；类型不合法时保持 config/mod 默认值不动）
     if type(s.globalEnabled) == "boolean" then mod.enabled = s.globalEnabled end
     if type(s.toggleKey) == "number" then
         config.toggleKey = s.toggleKey
         config.toggleKeyName = keyName(s.toggleKey)
     end
-    if type(s.states) == "table" then
-        for k, v in pairs(s.states) do
-            if type(v) == "boolean" and config.states[k] ~= nil then
-                config.states[k] = v
+    if type(s.topData) == "boolean" then config.topData = s.topData end
+    if type(s.debug) == "boolean" then config.topData = s.debug end   -- 更旧版本的键名
+    if type(s.petFallback) == "boolean" then config.petFallback = s.petFallback end
+    if type(s.activePet) == "string" and mod.petFrames[s.activePet] then
+        config.activePet = s.activePet
+    end
+
+    if type(s.profiles) == "table" then
+        -- v2：按角色还原 profile（只接受素材池中存在的角色；
+        -- 每份 profile 白名单清洗，非法/缺失键回退出厂默认）
+        for name, p in pairs(s.profiles) do
+            if type(p) == "table" and mod.petFrames[name] then
+                mod.petProfiles[name] = Profiles.SanitizeProfile(p, mod.defaultProfile)
             end
         end
+    elseif s.version == nil then
+        -- v1 旧存档迁移：旧格式是「全角色共享一份扁平配置」，提取为一份
+        -- profile 克隆给素材池全部角色——升级后每个角色的行为与升级前一致，
+        -- 之后再各自调整互不影响。
+        local legacy = s
+        -- 更旧版本的 margin 附增键兼容（与 v1 applySettings 行为一致）
+        if type(s.cardSlotReserve) == "number" and type(s.margin) == "number" then
+            legacy = Profiles.DeepCopy(s)
+            legacy.margin = s.margin + s.cardSlotReserve
+        end
+        local migrated = Profiles.SanitizeProfile(legacy, mod.defaultProfile)
+        for _, name in ipairs(mod.petList) do
+            mod.petProfiles[name] = Profiles.DeepCopy(migrated)
+        end
+        dlog("检测到 v1 旧存档，已迁移为每角色独立配置")
     end
-    if type(s.activePet)   == "string" and mod.petFrames[s.activePet] then
-        config.activePet   = s.activePet
-    end
-    if type(s.petFallback) == "boolean" then config.petFallback = s.petFallback end
-    if type(s.animSpeed)   == "number" and s.animSpeed > 0 then config.animSpeed = s.animSpeed end
-    -- MCM 可调配置项（旧存档缺这些键时保持 config 默认值不动）
-    if type(s.animFps) == "number" and config.animFps then config.animFps = s.animFps end
-    local w = config.wink
-    if type(w) == "table" then
-        if type(s.winkEnabled) == "boolean" then w.enabled = s.winkEnabled end
-        if (s.winkMode == "random" or s.winkMode == "fixed") then w.mode = s.winkMode end
-        if type(s.winkDelayMin) == "number" then w.delayMin = s.winkDelayMin end
-        if type(s.winkDelayMax) == "number" then w.delayMax = s.winkDelayMax end
-        if type(s.winkDelayFixed) == "number" then w.delayFixed = s.winkDelayFixed end
-        if (s.winkSadMode == "random" or s.winkSadMode == "fixed") then w.sadMode = s.winkSadMode end
-        if type(s.winkSadDelayMin) == "number" then w.sadDelayMin = s.winkSadDelayMin end
-        if type(s.winkSadDelayMax) == "number" then w.sadDelayMax = s.winkSadDelayMax end
-        if type(s.winkSadDelayFixed) == "number" then w.sadDelayFixed = s.winkSadDelayFixed end
-    end
-    if type(config.idle) == "table" then
-        if type(s.idleMinMainTime) == "number" then config.idle.minMainTime = s.idleMinMainTime end
-        if type(s.idleChance) == "number" then config.idle.triggerChancePerSec = s.idleChance end
-    end
-    if type(config.hurt) == "table" then
-        if type(s.hurtDuration) == "number" then config.hurt.duration = s.hurtDuration end
-        if type(s.hurtNoPenalty) == "boolean" then config.hurt.ignoreNoPenalties = s.hurtNoPenalty end
-        if type(s.hurtMonster) == "boolean" then config.hurt.monsterDamage = s.hurtMonster end
-    end
-    if type(s.cardpillDuration) == "number" then config.cardpillDuration = s.cardpillDuration end
-    if type(s.activeItemDuration) == "number" then config.activeItemDuration = s.activeItemDuration end
-    if type(config.itemQuality) == "table" then
-        if type(s.iqEnabled) == "boolean" then config.itemQuality.enabled = s.iqEnabled end
-        if (s.iqMode == "once" or s.iqMode == "loop") then config.itemQuality.mode = s.iqMode end
-        if type(s.iqLock) == "boolean" then config.itemQuality.lock = s.iqLock end
-        if type(s.iqGraceFrames) == "number" then config.itemQuality.graceFrames = s.iqGraceFrames end
-    end
-    if type(config.halfHealth) == "table" then
-        if type(s.hhThreshold) == "number" then config.halfHealth.threshold = s.hhThreshold end
-        if type(s.hhSoulHearts) == "boolean" then config.halfHealth.countSoulHearts = s.hhSoulHearts end
-        if type(s.hhOneThreshold) == "number" then config.halfHealth.oneHealthThreshold = s.hhOneThreshold end
-    end
-    if type(s.scale)           == "number" then config.scale           = s.scale end
-    if type(s.margin) == "number" then
-        local extra = (type(s.cardSlotReserve) == "number") and s.cardSlotReserve or 0
-        config.margin = s.margin + extra
-    end
-    if type(s.offsetY) == "number" then config.offsetY = s.offsetY end
-    if type(s.topData)         == "boolean" then config.topData         = s.topData end
-    if type(s.debug)           == "boolean" then config.topData         = s.debug end
+
+    mod:LoadActiveProfile()   -- 当前角色 profile -> config（切换活动视图）
 end
 
 function mod:SaveSettings()
@@ -1154,6 +1189,11 @@ end)
 
 local function registerMCM(MCM)
     local N = "InternalReactionOverlay"
+
+    -- 每角色独立配置页的标题后缀：提示当前编辑的是哪个角色的配置
+    local function petTag()
+        return "｜当前角色：" .. tostring(mod:GetPet())
+    end
 
     local function addBool(sub, get, set, text, info)
         MCM.AddSetting(N, sub, {
@@ -1265,6 +1305,10 @@ local function registerMCM(MCM)
     MCM.AddText(N, "桌宠角色", function() return "桌宠角色素材池（最多 5 个角色）" end)
     MCM.AddSpace(N, "桌宠角色")
     MCM.AddText(N, "桌宠角色", function()
+        return "每个角色的全部设置独立保存，切换即应用其专属配置"
+    end)
+    MCM.AddSpace(N, "桌宠角色")
+    MCM.AddText(N, "桌宠角色", function()
         return "可用角色(" .. #mod.petList .. ")：" .. table.concat(mod.petList, ", ")
     end)
     MCM.AddSpace(N, "桌宠角色")
@@ -1300,7 +1344,7 @@ local function registerMCM(MCM)
           "切换后立即按新角色的素材重新校验各状态开关" })
 
     -- ---------- 状态开关 ----------
-    MCM.AddText(N, "状态开关", function() return "各状态动画的独立开关" end)
+    MCM.AddText(N, "状态开关", function() return "各状态动画的独立开关" .. petTag() end)
     MCM.AddSpace(N, "状态开关")
     local stateLabels = {
         { "hurt",     "受击动画(火焰/爆炸/激光等)" },
@@ -1327,7 +1371,7 @@ local function registerMCM(MCM)
         { "main 状态下循环眨眼，间隔在「眨眼间隔」页调整" })
 
     -- ---------- 动画速度 ----------
-    MCM.AddText(N, "动画速度", function() return "全局动画播放速度" end)
+    MCM.AddText(N, "动画速度", function() return "全局动画播放速度" .. petTag() end)
     MCM.AddSpace(N, "动画速度")
     addNum("动画速度",
         function() return config.animSpeed end,
@@ -1341,7 +1385,7 @@ local function registerMCM(MCM)
         { "未在 animHold 单独指定的动画：15 = 每 4 渲染帧换 1 帧", "越小越慢、越大越快" })
 
     -- ---------- 眨眼间隔 ----------
-    MCM.AddText(N, "眨眼间隔", function() return "眨眼频率（满血/半血两档）" end)
+    MCM.AddText(N, "眨眼间隔", function() return "眨眼频率（满血/半血两档）" .. petTag() end)
     MCM.AddSpace(N, "眨眼间隔")
     local winkModeOptions = {
         { value = "random", label = "随机(random)" },
@@ -1390,7 +1434,7 @@ local function registerMCM(MCM)
         { "仅固定(fixed)模式生效" })
 
     -- ---------- 待机 ----------
-    MCM.AddText(N, "待机", function() return "待机随机动画触发条件" end)
+    MCM.AddText(N, "待机", function() return "待机随机动画触发条件" .. petTag() end)
     MCM.AddSpace(N, "待机")
     addNumSec("待机",
         function() return config.idle.minMainTime end,
@@ -1403,27 +1447,11 @@ local function registerMCM(MCM)
         0, 100, 5, "每秒触发概率",
         { "满足静置时长后，每秒按此概率随机播放一个待机动画" })
 
-    -- ---------- 事件时长 ----------
-    MCM.AddText(N, "事件时长", function() return "各事件状态持续时间" end)
-    MCM.AddSpace(N, "事件时长")
-    addNumSec("事件时长",
-        function() return config.hurt.duration end,
-        function(v) config.hurt.duration = v end,
-        0.5, 10, 0.5, "受击动画持续时长",
-        { "受击触发后的状态持续时间" })
-    addNumSec("事件时长",
-        function() return config.cardpillDuration end,
-        function(v) config.cardpillDuration = v end,
-        0.5, 10, 0.5, "卡牌/药丸动画持续时长",
-        { "使用卡牌/药丸后的状态持续时间" })
-    addNumSec("事件时长",
-        function() return config.activeItemDuration end,
-        function(v) config.activeItemDuration = v end,
-        0.5, 10, 0.5, "主动道具动画持续时长",
-        { "使用主动/副主动道具后的状态持续时间" })
-
     -- ---------- 受击 ----------
-    MCM.AddText(N, "受击", function() return "受击动画触发范围" end)
+    -- 注：v1.5 起事件动画不再有固定时长限制（pending 闩锁：播完整段才结束），
+    -- 原「事件时长」页（hurt/cardpill/active 持续时长）随之移除；
+    -- 播放节奏由「动画速度」页的 animHold/animFps/速度倍率决定。
+    MCM.AddText(N, "受击", function() return "受击动画触发范围" .. petTag() end)
     MCM.AddSpace(N, "受击")
     addBool("受击",
         function() return config.hurt.monsterDamage end,
@@ -1437,7 +1465,7 @@ local function registerMCM(MCM)
         { "带 DAMAGE_NO_PENALTIES 的伤害（不扣恶魔房概率等）不触发受击动画" })
 
     -- ---------- 道具质量 ----------
-    MCM.AddText(N, "道具质量", function() return "房间道具质量动画（依赖 ReactionAPI）" end)
+    MCM.AddText(N, "道具质量", function() return "房间道具质量动画（依赖 ReactionAPI）" .. petTag() end)
     MCM.AddSpace(N, "道具质量")
     addBool("道具质量",
         function() return config.itemQuality.enabled end,
@@ -1450,11 +1478,6 @@ local function registerMCM(MCM)
         { { value = "once", label = "播一遍(once)" }, { value = "loop", label = "持续循环(loop)" } },
         "播放模式",
         { "once=检测到质量变化时播一遍回 main", "loop=房间存在道具期间持续循环，质量变化时切换动画" })
-    addBool("道具质量",
-        function() return config.itemQuality.lock end,
-        function(v) config.itemQuality.lock = v end,
-        "道具动画播放期间不被打断",
-        { "item 动画开始后播完为止", "受击/卡牌等事件顺延到结束后再响应" })
     addNumSec("道具质量",
         function() return config.itemQuality.graceFrames end,
         function(v) config.itemQuality.graceFrames = v end,
@@ -1462,7 +1485,7 @@ local function registerMCM(MCM)
         { "进新房间后等待该时长再检测道具质量", "避免上一房间残留数据误触发（0.5秒=30帧）" })
 
     -- ---------- 半血判定 ----------
-    MCM.AddText(N, "半血判定", function() return "半血状态触发阈值" end)
+    MCM.AddText(N, "半血判定", function() return "半血状态触发阈值" .. petTag() end)
     MCM.AddSpace(N, "半血判定")
     addNum("半血判定",
         function() return config.halfHealth.threshold end,
@@ -1481,7 +1504,7 @@ local function registerMCM(MCM)
         { "店主(Keeper)以整数心计算：2 = 1 整心（默认）" })
 
     -- ---------- 外观 / 位置 ----------
-    MCM.AddText(N, "外观位置", function() return "叠加动画尺寸与左下角位置" end)
+    MCM.AddText(N, "外观位置", function() return "叠加动画尺寸与左下角位置" .. petTag() end)
     MCM.AddSpace(N, "外观位置")
     addNum("外观位置",
         function() return config.scale end,
@@ -1498,6 +1521,21 @@ local function registerMCM(MCM)
         function(v) config.offsetY = v end,
         -500, 800, 1, "上下偏移(上正下负)",
         { "正=上移(距底更远)，负=下移(超出屏幕底)，0=贴底" })
+    addNumPct("外观位置",
+        function() return config.maskStrength end,
+        function(v) config.maskStrength = v end,
+        0, 100, 5, "遮罩强度",
+        { "把桌宠整体按比例压暗：0%=原始亮度，100%=全黑", "暗部几乎不变；游戏滤镜过曝看不清面部时调大" })
+    addNumPct("外观位置",
+        function() return config.highlightStrength end,
+        function(v) config.highlightStrength = v end,
+        0, 100, 5, "高光强度",
+        { "把桌宠整体线性减亮：越大压得越狠", "过曝亮部下降最明显，与遮罩强度互补可叠加" })
+    addNumPct("外观位置",
+        function() return config.opacity end,
+        function(v) config.opacity = v end,
+        0, 100, 5, "透明度",
+        { "桌宠不透明度：100%=完全不透明，0%=全透", "调小可透出背后的游戏画面" })
 
     -- ---------- 其它 ----------
     MCM.AddText(N, "其它", function() return "调试选项" end)

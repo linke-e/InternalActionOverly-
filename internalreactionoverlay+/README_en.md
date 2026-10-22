@@ -9,6 +9,10 @@ main state, it occasionally plays a random idle animation.
 
 > Requires: The Binding of Isaac: Repentance+
 > API reference: [IsaacDocs (wofsauge)](https://wofsauge.github.io/IsaacDocs/rep/)
+>
+> **v3.1**: every desktop-pet character now keeps its own independent settings
+> profile (all animation/appearance options are saved per character and
+> auto-applied on switch; old saves migrate automatically).
 
 ---
 
@@ -48,13 +52,35 @@ Two characters are bundled: **Angle** and **TangTang**, all 256×256 transparent
 - Or set `activePet = "CharacterName"` in `internalreactionoverlay_config.lua`;
 - Takes effect immediately, no game restart needed.
 
+### Per-character settings (v3.1)
+
+**Every desktop-pet character owns an independent settings profile**, fully isolated:
+
+- Scale/position, animation speed, blink intervals, idle triggering, event
+  durations, state switches, `animHold` — all animation/appearance settings are
+  **saved per character**;
+- MCM edits always target the **current character** (each settings page shows
+  the active character in its title); **switching characters automatically
+  applies that character's own profile**;
+- A newly added character starts from the factory defaults in
+  `internalreactionoverlay_config.lua`, then diverges independently;
+- Global options shared by all characters: master toggle, hotkey, `petFallback`
+  borrow toggle, top-left debug line;
+- Persistence: Isaac only offers a single save slot, so independent profiles are
+  stored name-sectioned inside that save
+  (`internalreactionoverlay_profiles.lua` handles capture/apply/sanitize);
+- **Old saves migrate automatically**: after upgrading, the previous shared
+  settings are cloned to every character (behavior identical to pre-upgrade),
+  then characters diverge as you edit each one.
+
 **Adding a character**:
 1. Create a new folder under `resources/gfx/pets/` (use ASCII letters/digits/underscores
    for the name — Isaac's resource loader handles non-ASCII paths poorly);
 2. Add `main.png`, `main_sad.png` and the animation sub-folders (256×256 PNG frames;
    off-size frames are auto-resized by the script);
 3. Run `python gen_anim.py` in the mod root to rebuild the frame manifest;
-4. The new character appears in the MCM "桌宠角色" page.
+4. The new character appears in the MCM "桌宠角色" page (initial profile = factory
+   defaults, saved independently from then on).
 
 > Incomplete character assets still work: by default (`petFallback = false`) events
 > referencing a missing animation simply do not trigger — the pet stays in its
@@ -121,9 +147,10 @@ Decision tree (`mod:IsMonsterDamage`):
   [DamageFlag enum](https://cuerzor.github.io/IsaacDocs/rep/enums/DamageFlag.html)).
 - **Non-penalty damage** carrying `DAMAGE_NO_PENALTIES` (no devil-deal penalty)
   does not trigger hurt (`config.hurt.ignoreNoPenalties`, on by default).
-- State duration: `config.hurt.duration` (default 90 render frames ≈ 1.5 s).
-- Hurt has the **highest priority** — it interrupts any other event animation,
-  and every new instance of damage re-triggers it.
+- Hurt animations **play their full sequence** (hurt frames × animHold.hurt), no fixed cutoff;
+  repeated damage re-triggers after the previous play finishes.
+- Hurt and boss share the **same priority level** — they never interrupt each other
+  (the playing one finishes, the other is deferred).
 - Detection uses `MC_ENTITY_TAKE_DMG` (player only) + `CallbackPriority.EARLY`,
   so errors thrown by other mods' callbacks cannot skip it.
 
@@ -134,7 +161,7 @@ Using an **active item** (primary or pocket slot) plays the `activity` animation
 - Detected via `MC_USE_ITEM`, which only fires when an active item is **actually used**;
   covers all slots (`SLOT_PRIMARY`, `SLOT_POCKET`, …).
 - Pills use `MC_USE_PILL` and cards use `MC_USE_CARD`, so they never false-trigger this.
-- State duration: `config.activeItemDuration` (default 90 render frames ≈ 1.5 s).
+- The activity animation **plays its full sequence** (frames × animHold.activity), no fixed cutoff.
 - Toggle: `config.states.active` (on by default).
 
 ### Room item quality (requires ReactionAPI)
@@ -149,9 +176,10 @@ Re-detected when items are picked up or the room changes; reset on new room.
 - `once`: plays once per detected quality change, then returns to main (default);
 - `loop`: loops for as long as unpicked items exist, switching animation on quality change.
 
-**Play-to-completion lock** (once mode only, `itemQuality.lock`): once started, the item
-animation is not interrupted by hurt/cards or other higher-priority events
-(they are deferred until it finishes).
+**Playback priority**: item0~item4 sit above card/pill, active item, hurt and boss
+in the animation priority (only half health — and a quality change itself — outrank
+them below item4), so those events are deferred until the item animation finishes;
+picking up a higher-quality item switches to the new animation immediately.
 
 > Without ReactionAPI this feature silently disables itself; everything else keeps working.
 
@@ -160,19 +188,27 @@ animation is not interrupted by hurt/cards or other higher-priority events
 ## Playback Rules
 
 - **Event animations** (hurt, card/pill, active item, boss, half health, item quality):
-  play once, then return to main.
-- **Item lock**: in once mode the item animation plays to completion
-  (`itemQuality.lock = true`); higher-priority events are deferred.
+  **play to the end of the full sequence** (duration = frames × animHold ÷ animSpeed,
+  no fixed-duration cutoff), then return to main.
+- **Animation priority** (only a higher priority interrupts a playing animation;
+  interrupted events are deferred and replayed in full afterwards):
+```
+item4 > half > item3 > item2 > item1 > item0 > Medicine(card/pill) > Activity(active item) > hurt = boss > idle1~4 > wink = wink1
+```
+  - the item state's priority follows the room's current **highest quality**
+    (item4 outranks half health; item0 is below it);
+  - **hurt and boss are equal**: they never interrupt each other — the playing
+    one finishes first, the other is deferred;
+  - repeated events at the same level (e.g. taking damage again) naturally
+    re-trigger after the previous play finishes.
 - **Sustained conditions** (boss fight, half health, item quality): after one play,
   the state is "suppressed" until the condition clears (leave boss room / heal /
   items picked up) to avoid endless re-triggering.
-- **Blinking**: loops while in main state; after each blink it waits a random interval.
-  - Full health: wink, every **3–5 s**; half health: wink1, every **3–7 s** (MCM-adjustable).
-  - Blink has the lowest priority; any event animation interrupts it.
-- **Priority** (high → low):
-```
-hurt > cardpill > active > boss > item > half > idle > wink > main
-```
+- **Blinking**: loops while in main state; after each blink it waits a random
+  interval. Lowest priority.
+- **Item animation mode** (`itemQuality.mode`): once = play once, return to main;
+  loop = persist while unpicked items exist (while looping, lower-priority events
+  stay deferred until items are picked up / the room changes).
 
 ---
 
@@ -180,35 +216,46 @@ hurt > cardpill > active > boss > item > half > idle > wink > main
 
 All tunables live in `internalreactionoverlay_config.lua`; no need to touch main.lua.
 
-| Option | Default | Description |
-|---|---|---|
-| `activePet` | "Angle" | Active desktop-pet character (pool folder name; MCM-switchable, persisted) |
-| `petFallback` | false | Borrow other characters' same-key animation when missing; off by default (missing events don't trigger, pet stays idle) |
-| `animFps` | 15 | Default animation frame rate (render fps, 60 fps basis) |
-| `animHold` | see file | Per-animation frame hold (render frames per animation frame; 60 ≈ 1 s) |
-| `animSpeed` | 1.0 | Global animation speed multiplier (>1 faster / <1 slower) |
-| `scale` | 0.5 | Sprite scale (1.0 = original 256 px) |
-| `margin` | -50 | Horizontal offset (positive = right) |
-| `offsetY` | -30 | Vertical offset (positive = up, 0 = flush bottom) |
-| `main.entries` | main_static | Full-health idle sprite pool (weighted random) |
-| `main.sadStatic` | main_sad | Half-health idle sprite |
-| `wink.*` | — | Blink toggle/animation/intervals (full: wink 3–5 s, half: wink1 3–7 s; each supports random / fixed mode) |
-| `idle.*` | minMainTime=600 / 30% | Idle pool and trigger chance (30% per second after 10 s in main) |
-| `hurt.duration` | 90 | Hurt state duration (render frames) |
-| `hurt.ignoreNoPenalties` | true | Non-penalty damage (DAMAGE_NO_PENALTIES) does not trigger hurt |
-| `hurt.monsterDamage` | true | Monster attacks (body/tears/laser/bombs) also trigger hurt |
-| `hurt.damageFlags` | 9 types | Damage types that trigger hurt (DamageFlag bit flags) |
-| `cardpillDuration` | 90 | Card/pill state duration (render frames) |
-| `activeItemDuration` | 90 | Active-item state duration (render frames) |
-| `halfHealth` | — | Half-health rule: threshold (≤1 half heart) / count soul hearts / special characters (Lost immune, Keeper at 1 full heart) |
-| `itemQuality` | — | Item-quality animation: enabled / mode (once/loop) / lock / graceFrames / animKeys mapping |
-| `events` | — | Event → animation key mapping (fixed key or weighted variants) |
-| `playback` | once | Playback mode per state (once / loop) |
-| `bossRoomTypes` | ROOM_BOSS/BOSSRUSH | Room types counted as boss fights |
-| `states` | — | Per-state on/off switches |
-| `priority` | — | State priority order |
-| `toggleKey` | F3 | Hotkey to toggle the whole overlay |
-| `topData` | false | Debug text line in the top-left corner (room/coords/FPS) |
+> **Scope**: except the 4 options marked **[GLOBAL]** below, every MCM-adjustable
+> option is **per character** (factory defaults live in this file; in-game edits
+> are saved per character and auto-applied on switch — see "Per-character
+> settings"). Structural tables (`animHold`/`events`/`main`, …) are shared
+> factory declarations; per-character profiles override individual values.
+
+| Option | Default | Scope | Description |
+|---|---|---|---|
+| `activePet` | "Angle" | **[GLOBAL]** | Active desktop-pet character (pool folder name; MCM-switchable, persisted) |
+| `petFallback` | false | **[GLOBAL]** | Borrow other characters' same-key animation when missing; off by default (missing events don't trigger, pet stays idle) |
+| `animFps` | 15 | global | Default animation frame rate (render fps, 60 fps basis) |
+| `animHold` | see file | global (factory-shared) | Per-animation frame hold (render frames per animation frame; 60 ≈ 1 s); not saved per character since v1.5 — edits apply on restart |
+| `animSpeed` | 1.0 | per character | Animation speed multiplier (>1 faster / <1 slower) |
+| `scale` | 0.5 | per character | Sprite scale (1.0 = original 256 px) |
+| `margin` | -50 | per character | Horizontal offset (positive = right) |
+| `offsetY` | -30 | per character | Vertical offset (positive = up, 0 = flush bottom) |
+| `maskStrength` | 0.0 | per character | Mask strength: multiplies the pet darker (0–1; 0 = original brightness, 1 = black) — raise it when a game filter overexposes the animation |
+| `highlightStrength` | 0.0 | per character | Highlight strength: subtracts brightness linearly (0–1, higher = stronger); hits overexposed highlights hardest, stacks with mask strength |
+| `opacity` | 1.0 | per character | Opacity of the pet (0–1; 1 = fully opaque); lower it to see the game behind |
+| `main.entries` | main_static | shared factory | Full-health idle sprite pool (weighted random) |
+| `main.sadStatic` | main_sad | shared factory | Half-health idle sprite |
+| `wink.*` | — | per character | Blink toggle/animation/intervals (full: wink 3–5 s, half: wink1 3–7 s; each supports random / fixed mode) |
+| `idle.*` | minMainTime=600 / 30% | per character (pool structure shared) | Idle pool and trigger chance (30% per second after 10 s in main) |
+| `hurt.ignoreNoPenalties` | true | per character | Non-penalty damage (DAMAGE_NO_PENALTIES) does not trigger hurt |
+| `hurt.monsterDamage` | true | per character | Monster attacks (body/tears/laser/bombs) also trigger hurt |
+| `hurt.damageFlags` | 9 types | shared factory | Damage types that trigger hurt (DamageFlag bit flags) |
+| `halfHealth` | — | per character | Half-health rule: threshold (≤1 half heart) / count soul hearts / special characters (Lost immune, Keeper at 1 full heart) |
+| `itemQuality` | — | per character (animKeys shared) | Item-quality animation: enabled / mode (once/loop) / graceFrames / animKeys mapping |
+| `events` | — | shared factory | Event → animation key mapping (fixed key or weighted variants) |
+| `playback` | once | shared factory | Playback mode per state (once / loop) |
+| `bossRoomTypes` | ROOM_BOSS/BOSSRUSH | shared factory | Room types counted as boss fights |
+| `states` | — | per character | Per-state on/off switches |
+| `toggleKey` | F3 | **[GLOBAL]** | Hotkey to toggle the whole overlay |
+
+> Removed since v1.5: `hurt.duration` / `cardpillDuration` / `activeItemDuration`
+> (event animations now play their full sequence with no fixed duration),
+> `itemQuality.lock` (replaced by the animation priority), and `priority`
+> (now a numeric in-code animation priority). Stale keys in old saves are
+> dropped automatically.
+| `topData` | false | **[GLOBAL]** | Debug text line in the top-left corner (room/coords/FPS) |
 
 ---
 
@@ -219,20 +266,24 @@ With [Mod Config Menu](https://steamcommunity.com/sharedfiles/filedetails/?id=26
 Every change is persisted into the save. Without MCM, edit
 `internalreactionoverlay_config.lua` directly — same effect.
 
-| MCM page | Settings |
-|---|---|
-| **总开关 (Master)** | Enable the whole overlay; toggle hotkey (F3 by default) |
-| **桌宠角色 (Character)** | Active character (cycle through the pool, effective immediately); fallback-to-other-characters toggle |
-| **状态开关 (State switches)** | Individual toggles: hurt / card & pill / active item / boss / item quality / half health / idle / blink |
-| **动画速度 (Speed)** | Global speed multiplier (0.25–4); default animation fps |
-| **眨眼间隔 (Blink intervals)** | Full-health & half-health: mode (random/fixed), random min/max, fixed interval |
-| **待机 (Idle)** | Idle delay (1–120 s); trigger chance per second (0–100%) |
-| **事件时长 (Event durations)** | Hurt / card & pill / active-item animation durations (0.5–10 s) |
-| **受击 (Hurt)** | Monster attacks also trigger; ignore non-penalty damage |
-| **道具质量 (Item quality)** | Toggle; playback mode (once/loop); play-to-completion lock; new-room detection grace |
-| **半血判定 (Half health)** | Threshold (half hearts); count soul/black hearts; Keeper threshold |
-| **外观位置 (Appearance)** | Scale / horizontal offset / vertical offset |
-| **其它 (Other)** | Top-left debug data toggle |
+> Except "总开关 (Master)", the fallback toggle on "桌宠角色 (Character)" and
+> "其它 (Other)", every page edits the **current character's own profile** (the
+> active character is shown in the page title). After a switch, the pages show —
+> and edit — the new character's values.
+
+| MCM page | Settings | Scope |
+|---|---|---|
+| **总开关 (Master)** | Enable the whole overlay; toggle hotkey (F3 by default) | global |
+| **桌宠角色 (Character)** | Active character (cycle through the pool, effective immediately, applies its own profile); fallback-to-other-characters toggle | switch = global; fallback = global |
+| **状态开关 (State switches)** | Individual toggles: hurt / card & pill / active item / boss / item quality / half health / idle / blink | per character |
+| **动画速度 (Speed)** | Speed multiplier (0.25–4); default animation fps | per character |
+| **眨眼间隔 (Blink intervals)** | Full-health & half-health: mode (random/fixed), random min/max, fixed interval | per character |
+| **待机 (Idle)** | Idle delay (1–120 s); trigger chance per second (0–100%) | per character |
+| **受击 (Hurt)** | Monster attacks also trigger; ignore non-penalty damage | per character |
+| **道具质量 (Item quality)** | Toggle; playback mode (once/loop); new-room detection grace | per character |
+| **半血判定 (Half health)** | Threshold (half hearts); count soul/black hearts; Keeper threshold | per character |
+| **外观位置 (Appearance)** | Scale / horizontal offset / vertical offset / mask strength / highlight strength / opacity (darkening & translucency, for overexposing filters) | per character |
+| **其它 (Other)** | Top-left debug data toggle | global |
 
 ---
 
@@ -278,6 +329,15 @@ python gen_anim.py
 
 ### What the script does
 
+- **Asset integrity check**: every character must have `main.png` (generates the
+  `main_static` idle sprite). A missing one is a hard error (`[X]`, non-zero exit)
+  with typo-suspect hints — e.g. `mian.png` is only 2 edits from the reserved name
+  `main.png` (a misspelled filename yields an orphan key nobody references, leaving
+  the pet's main state with nothing to draw). Also checks: root PNGs whose names are
+  near a reserved name yet never referenced by the config, empty animation folders
+  (`[!]`), and animation keys referenced by `internalreactionoverlay_config.lua`
+  but missing for the character (`[i]`, lists which events won't trigger for that
+  character; enable `petFallback` to borrow from others);
 - Scans every character under `resources/gfx/pets/` (up to 5; folder names limited to
   ASCII letters/digits/underscores);
 - **Auto-resizes** off-size frames to 256×256, overwriting in place (asks for
@@ -328,6 +388,9 @@ internalreactionoverlay_frames.lua 已重建(角色池格式, 2 个角色):
   - a missing item-quality animation → that quality tier stays silent, the rest work
 - An invalid `activePet` (folder deleted/renamed) → falls back to the first pool character.
 - More than 5 characters → `gen_anim.py` skips the extras with a warning.
+- Asset-missing auto-disables are **temporary degradation**: they are never written
+  into the character's profile, and automatically re-enable once the assets are
+  back (or you switch to a character that has them).
 
 ---
 
@@ -336,7 +399,8 @@ internalreactionoverlay_frames.lua 已重建(角色池格式, 2 个角色):
 ```
 internalreactionoverlay+/
 ├── main.lua                          # main logic (state machine + rendering + character pool + MCM + save)
-├── internalreactionoverlay_config.lua# configuration file (edit this)
+├── internalreactionoverlay_config.lua# configuration file: factory defaults + global options (edit this)
+├── internalreactionoverlay_profiles.lua # per-character settings (profile) module: capture/apply/sanitize
 ├── internalreactionoverlay_frames.lua# multi-character frame manifest (generated by gen_anim.py, do not hand-edit)
 ├── gen_anim.py                       # manifest rebuilder (multi-character + 256×256 auto-resize)
 ├── resize_256.py                     # batch-resize any assets to 256×256 (outputs to resized_256/, originals untouched)
@@ -393,6 +457,13 @@ skip this mod thanks to the EARLY priority.
 A: The active character is missing that asset. By default it is not borrowed — the
 event doesn't trigger and the pet stays idle. To borrow it across characters,
 enable "缺素材时借用其它角色" (`petFallback`) in MCM.
+
+**Q: Do the characters' settings interfere with each other?**
+A: No. Every character's animation/appearance settings are saved independently —
+MCM edits only affect the current character, and switching applies that
+character's own profile. Only the master toggle, hotkey and the borrow toggle
+are global. Upgrading from an older version clones your previous settings to
+every character, so behavior stays the same.
 
 **Q: After replacing assets the pet doesn't show at all?**
 A: Most likely the new assets are **not 256×256** (and inconsistent across frames) —

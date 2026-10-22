@@ -1,0 +1,24 @@
+# ---- 素材原始备份（只做本地留存，不进库）----
+素材/
+
+# ---- 第三方创意工坊模组（本地部署，不维护源码）----
+# 目录名以 !! 开头且以空格结尾：gitignore 中 ! 是特殊字符需转义，
+# 尾随空格需用反斜杠转义
+\!\! reactionapi\ /
+
+# ---- Python 产物 ----
+__pycache__/
+*.pyc
+
+# ---- 本地测试设施：测试脚本（mock_env.lua / test_logic.lua / verify.mjs）入库，
+#      仅忽略 fengari 依赖与 npm 产物（重跑测试：在该目录 npm install fengari）----
+.tmp_verify/node_modules/
+.tmp_verify/package.json
+.tmp_verify/package-lock.json
+
+# ---- 工具输出 ----
+internalreactionoverlay+/resized_256/
+
+# ---- Windows 系统文件 ----
+Thumbs.db
+Desktop.ini

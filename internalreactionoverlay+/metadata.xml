@@ -7,6 +7,7 @@
   可以让桌宠根据游戏内的事件播放动画了
   目前已有事件：进入BOSS房、受到伤害、角色半血、发现不同等级道具（需要ReactionAPI）、使用主动/副主动道具等
   v3：新增桌宠角色素材池（最多5个角色，一个角色一个文件夹），游戏内Mod Config Menu一键切换角色并调整全部动画配置
+  v3.1：每个桌宠角色独立保存全部动画/外观配置（互不影响，切换角色自动应用其专属配置，旧存档自动迁移）
   可以通过替换png图片帧的方式替换桌宠动画,内置两套可选素材（超天酱Angle/糖糖TangTang）
   详情见README.md / README_en.md
 
@@ -15,8 +16,9 @@
 InternalReactionOverlay+ interactive desktop pet overlay (Repentance+)
 Plays reaction animations on in-game events: boss fights, damage, half health, item quality (ReactionAPI), active item usage, and more.
 v3: desktop-pet character pool (up to 5 characters, one folder each), switchable in-game via Mod Config Menu with full animation settings.
+v3.1: per-character settings profiles (independent animation/appearance config per pet, auto-applied on switch, old saves auto-migrated).
 See README_en.md for details.</description>
-    <version>1.2</version>
+    <version>1.5</version>
     <visibility>Public</visibility>
     <tag id="Lua"/>
     <tag id="Graphics"/>
