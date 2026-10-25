@@ -40,14 +40,14 @@ resources/gfx/pets/
 └── TangTang/                    # 角色二（多一个 idle5/）
 ```
 
-内置两个角色：**Angle**（超天酱）与 **TangTang**（糖糖），均为 256×256 透明底 PNG。
+内置角色：DeepseekWhite、DeepseekWhite、Genimi、Angle（超天酱）、Rain（糖糖），均为 256×256 透明底 PNG。
 
 **切换角色**（三选一，修改都会存入存档）：
 - 游戏内 MCM →「桌宠角色」页左右切换；
 - 改 `internalreactionoverlay_config.lua` 的 `activePet = "角色名"`；
 - 切换立即生效，无需重启游戏。
 
-### 每角色独立配置（v3.1）
+### 每角色独立配置
 
 **每个桌宠角色拥有一份独立配置（profile）**，互不影响：
 
@@ -93,7 +93,7 @@ resources/gfx/pets/
 | 眨眼（半血） | wink1 | wink1/ | 循环 |
 
 > \* 帧数因角色而异（如 Angle 的 hurt 3 帧、TangTang 的 hurt 8 帧；详见
-> `internalreactionoverlay_frames.lua`）。TangTang 收录了 idle5 素材，默认待机池只启用
+> `internalreactionoverlay_frames.lua`）。Rain 收录了 idle5 素材，默认待机池只启用
 > idle1~idle4；想启用请在 `config.idle.entries` 里加 `{ key = "idle5", weight = 2 }`。
 
 ### 受击动画

@@ -45,14 +45,14 @@ resources/gfx/pets/
 └── TangTang/                    # character 2 (has an extra idle5/)
 ```
 
-Two characters are bundled: **Angle** and **TangTang**, all 256×256 transparent PNGs.
+Characters are bundled: DeepseekWhite,DeepseekSchool,Genimi,Angle and Rain, all 256×256 transparent PNGs.
 
 **Switching characters** (all of these persist into the save):
 - In-game: MCM → "桌宠角色" (Character) page, cycle left/right;
 - Or set `activePet = "CharacterName"` in `internalreactionoverlay_config.lua`;
 - Takes effect immediately, no game restart needed.
 
-### Per-character settings (v3.1)
+### Per-character settings 
 
 **Every desktop-pet character owns an independent settings profile**, fully isolated:
 
