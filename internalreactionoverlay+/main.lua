@@ -6,7 +6,9 @@
 --        main 播放期间偶尔随机触发待机动画。
 --  角色素材池：resources/gfx/pets/<角色名>/（一个角色一个文件夹，最多 5 个），
 --        通过 config.activePet / 模组配置菜单(MCM)切换使用的角色。
---  事件：卡牌/药丸、主动/副主动道具使用、Boss 战、半血、房间道具质量(item0~item4，依赖 ReactionAPI)。
+--  事件：药丸、卡牌（各自独立动画，缺素材回退共用动画）、主动/副主动道具使用、
+--        Boss 战、半血、房间道具质量(item0~item4，依赖 ReactionAPI)、
+--        桌宠突脸（触发指定事件时放大冲入画面中央播放后返回）。
 --  动画帧来源：resources/gfx/pets/<角色>/（由 gen_anim.py 生成
 --        internalreactionoverlay_frames.lua 多角色帧清单）。
 --  API 参考：IsaacDocs (https://wofsauge.github.io/IsaacDocs/rep/)
@@ -139,6 +141,7 @@ end
 function mod:RefreshPet()
     mod.frameSprites = {}
     mod.frameErrors = {}
+    mod:AbortPopup()   -- 切换角色/读档：中止进行中的突脸序列
     mod:SanitizeConfig()
     mod.curState = nil
     mod.curAnimKey = nil
@@ -178,8 +181,10 @@ function mod:SanitizeConfig()
         return mod:GetFrames(k) ~= nil
     end
 
-    -- 事件 spec -> 动画键集合（固定 key 或 variants 列表）
-    local function eventKeys(spec)
+    -- 事件 spec -> 动画键集合（固定 key 或 variants 列表）。
+    -- pill/card 额外并入 cardpill 共用动画键：专属素材缺失时回退共用动画，
+    -- 状态不因缺专属素材而被禁用（老素材集行为不变）。
+    local function eventKeys(stateKey, spec)
         local keys = {}
         if type(spec) == "table" and spec.key then
             keys[#keys + 1] = spec.key
@@ -187,6 +192,10 @@ function mod:SanitizeConfig()
             for _, v in ipairs(spec.variants) do
                 if type(v) == "table" and v.key then keys[#keys + 1] = v.key end
             end
+        end
+        if stateKey == "pill" or stateKey == "card" then
+            local cp = config.events and config.events.cardpill
+            if type(cp) == "table" and cp.key then keys[#keys + 1] = cp.key end
         end
         return keys
     end
@@ -213,7 +222,7 @@ function mod:SanitizeConfig()
             return hasKey(wc.animKey) or hasKey(wc.sadAnimKey)
         else
             local spec = config.events and config.events[stateKey]
-            for _, k in ipairs(eventKeys(spec)) do
+            for _, k in ipairs(eventKeys(stateKey, spec)) do
                 if hasKey(k) then return true end
             end
             return false
@@ -247,10 +256,12 @@ function mod:SanitizeConfig()
         end
     end
 
-    -- 1) 固定事件状态：动画键全缺失 -> 禁用该状态（item 单独处理）
+    -- 1) 固定事件状态：动画键全缺失 -> 禁用该状态（item 单独处理；
+    --    pill/card 的键集已并入 cardpill 回退键，共用动画可用即不禁用）
     for stateKey, spec in pairs(config.events or {}) do
-        if stateKey ~= "item" and config.states and config.states[stateKey] ~= nil then
-            local keys = eventKeys(spec)
+        if stateKey ~= "item" and stateKey ~= "cardpill"
+            and config.states and config.states[stateKey] ~= nil then
+            local keys = eventKeys(stateKey, spec)
             local anyValid = false
             for _, k in ipairs(keys) do
                 if hasKey(k) then anyValid = true; break end
@@ -366,9 +377,10 @@ mod.animMode = "loop"    -- "loop" 循环 / "once" 播完即止
 -- 动画播多长状态就持续多久（帧数 × animHold ÷ animSpeed），无固定时长截断；
 -- 被更高优先级动画打断时保持 pending，顺延到其播完后重新完整播放
 
-mod.cardpillPending = false   -- 使用卡牌/药丸
-mod.activePending = false     -- 使用主动道具/副主动道具（药丸/卡牌不走此标记）
-mod.hurtPending = false       -- 受击（触发类型见 config.hurt.damageFlags）
+mod.pillPending = false     -- 使用药丸（动画缺素材时回退 cardpill 共用动画）
+mod.cardPending = false     -- 使用卡牌（动画缺素材时回退 cardpill 共用动画）
+mod.activePending = false   -- 使用主动道具/副主动道具（药丸/卡牌不走此标记）
+mod.hurtPending = false     -- 受击（触发类型见 config.hurt.damageFlags）
 
 -- 抑制标记：once 动画播完后，若其触发条件仍然持续（如 Boss 房/半血），
 -- 抑制该状态直到条件消失，避免立刻重新触发（除 main 外都只播一次）
@@ -408,14 +420,14 @@ end
 -- ---------------------------------------------------------
 --  动画优先级（数值越大越优先，只有更高优先级能打断正在播放的动画）：
 --    item4(90) > half(80) > item3(70) > item2(60) > item1(50) > item0(40)
---    > cardpill/Medicine(30) > active/Activity(20) > hurt(10) = boss(10)
+--    > pill/card/Medicine(30) > active/Activity(20) > hurt(10) = boss(10)
 --    > idle(5) > wink(2) > main(0，兜底不参与扫描)
 --  item 状态按当前房间最高质量动态插入序列，因此 half 与 item 的相对
 --  优先级随质量变化。同级（hurt = boss）不互相打断：先播者保持，
 --  另一个顺延到其播完后再响应。
 -- ---------------------------------------------------------
 local STATE_PRIO = {
-    half = 80, cardpill = 30, active = 20, hurt = 10, boss = 10, idle = 5, wink = 2,
+    half = 80, pill = 30, card = 30, active = 20, hurt = 10, boss = 10, idle = 5, wink = 2,
 }
 local ITEM_PRIO = { [0] = 40, [1] = 50, [2] = 60, [3] = 70, [4] = 90 }
 local function statePrio(key, itemQ)
@@ -482,16 +494,53 @@ function mod:PickEventKey(spec)
     return nil
 end
 
--- 进入 main：随机挑一个主动画循环播放。
--- 半血时常态贴图切换为 sadStatic（main_sad）。
+-- 事件状态 -> 实际可播放的动画键：先按 spec 解析，素材缺失时
+-- pill/card 回退到 cardpill 共用动画（老素材集行为保持不变）。
+-- 返回 nil = 该状态本次无素材可播。
+function mod:ResolveEventKey(stateKey, spec)
+    local key = mod:PickEventKey(spec)
+    if key and mod:GetFrames(key) then return key end
+    if stateKey == "pill" or stateKey == "card" then
+        local cp = config.events and config.events.cardpill
+        local fb = cp and mod:PickEventKey(cp)
+        if fb and mod:GetFrames(fb) then return fb end
+    end
+    return nil
+end
+
+-- ---------------------------------------------------------
+--  Lost / 堕化Lost 悲伤判定：角色在 lostSad.playerTypes 中且身上
+--  没有 Holy Mantle 圣盾效果（圣斗篷道具/圣卡/堕化Lost固有盾均计入）
+--  时返回 true。API 缺 NullItemEffect 枚举时按「有盾」处理（不误悲伤）。
+-- ---------------------------------------------------------
+function mod:ComputeLostSad(player)
+    local ls = config.lostSad
+    if not ls or not ls.enabled then return false end
+    local okT, pType = pcall(function() return player:GetPlayerType() end)
+    if not okT or not (ls.playerTypes and ls.playerTypes[pType]) then return false end
+    local mantleId = (type(NullItemEffect) == "table") and NullItemEffect.ID_HOLY_MANTLE
+    if not mantleId then return false end   -- 无该枚举的旧 API：跳过检测
+    local ok, has = pcall(function() return player:HasNullEffect(mantleId) end)
+    if ok and has then return false end     -- 有圣盾：正常形态
+    return true
+end
+
+-- 常态贴图目标键：半血或 Lost 无盾 -> sadStatic（main_sad.png），否则 main_static
+function mod:MainTargetKey(player)
+    if config.main and config.main.sadStatic then
+        local sad = mod:ComputeHalfHealth(player) or mod:ComputeLostSad(player)
+        if sad then return config.main.sadStatic end
+    end
+    return "main_static"
+end
+
+-- 进入 main：常态贴图循环播放（半血/Lost 无盾时为 sadStatic）
 function mod:StartMain()
     local key = "main_static"
     local p = Game():GetPlayer(0)
     if p then
-        local ok, sad = pcall(function() return mod:ComputeHalfHealth(p) end)
-        if ok and sad and config.main.sadStatic then
-            key = config.main.sadStatic
-        end
+        local ok, k = pcall(function() return mod:MainTargetKey(p) end)
+        if ok and k then key = k end
     end
     mod:StartAnim(key, "loop")
 end
@@ -518,12 +567,15 @@ function mod:NextWinkDelay()
     return math.random(minF, maxF)
 end
 
--- 半血状态（总血量<=半颗心）
+-- 悲伤状态（半血 或 Lost/Tainted Lost 无圣盾）
 function mod:IsSad()
     local p = Game():GetPlayer(0)
     if not p then return false end
-    local ok, sad = pcall(function() return mod:ComputeHalfHealth(p) end)
-    return ok and sad
+    local ok, sad = pcall(function()
+        return mod:ComputeHalfHealth(p) or mod:ComputeLostSad(p)
+    end)
+    if not ok then return false end
+    return sad == true
 end
 
 -- 眨眼动画键：满血 wink（overlay_wink），半血 wink1（overlay_wink1）
@@ -610,18 +662,18 @@ function mod:ItemPlaybackMode()
     return config.playback.item or "once"
 end
 
--- 使用卡牌 -> 触发卡牌/药丸动画（Medicine）
+-- 使用卡牌 -> 触发卡牌动画（专属素材缺失时回退 cardpill 共用动画）
 function mod:OnUseCard(cardType, player, useFlags)
-    if config.states.cardpill then
-        mod.cardpillPending = true   -- once 播完自动消费，无固定时长
+    if config.states.card then
+        mod.cardPending = true   -- once 播完自动消费，无固定时长
     end
     return nil   -- 不拦截卡牌使用
 end
 
--- 使用药丸 -> 触发卡牌/药丸动画（Medicine）
-function mod:OnUsePill(pillColor, player, useFlags)
-    if config.states.cardpill then
-        mod.cardpillPending = true
+-- 使用药丸 -> 触发药丸动画（专属素材缺失时回退 cardpill 共用动画）
+function mod:OnUsePill(pillEffect, player, useFlags)
+    if config.states.pill then
+        mod.pillPending = true
     end
     return nil   -- 不拦截药丸使用
 end
@@ -732,6 +784,218 @@ function mod:OnPlayerTakeDmg(entity, amount, damageFlags, source, countdownFrame
 end
 
 -- ---------------------------------------------------------
+--  桌宠突脸（Popup）序列
+--  触发 config.popup.event 指定的事件时接管渲染，五阶段状态机：
+--    exit   桌宠从原位置平滑滑出画面（方向 config.popup.exitDir）
+--    enter  默认动画放大到「宽度 = 游戏窗口高度」，从窗口底部
+--           边缘中点平滑滑入至画面正中央
+--    play   在正中央播放该事件的动画（放大版，once 播完为止）
+--    leave  从中央沿原路（底部中点方向）平滑滑出画面
+--    return 桌宠沿移出方向原路平滑滑回原位置，恢复常态动画
+--  序列期间常规状态机冻结（事件 pending 顺延到序列结束后处理）；
+--  一次完整突脸结束后进入冷却（cooldownFrames），防连续事件刷屏。
+-- ---------------------------------------------------------
+mod.popup = nil           -- 激活中的突脸序列（nil = 未激活）
+mod.popupArmed = nil      -- 待启动参数（状态机段解析事件后置位，
+                          -- 渲染段算出常规渲染坐标后转正启动）
+mod.popupCooldown = 0     -- 冷却剩余渲染帧
+
+-- popup.event 是否匹配当前要触发的事件状态（itemN = item 状态且质量为 N）
+function mod:PopupEventMatches(topKey, curQ)
+    local pc = config.popup
+    if not pc or not pc.enabled then return false end
+    local ev = pc.event or "item4"
+    local q = tonumber(ev:match("^item([0-4])$"))
+    if q then
+        return topKey == "item" and curQ == q
+    end
+    return topKey == ev
+end
+
+-- 突脸要播放的事件动画键（item 按质量，其余走事件 spec+回退链）
+function mod:PopupAnimKey(topKey, curQ)
+    if topKey == "item" then
+        return curQ and mod:ItemQualityAnimKey(curQ) or nil
+    end
+    return mod:ResolveEventKey(topKey, config.events[topKey])
+end
+
+-- 状态机选出新高优先级事件时调用：命中突脸配置则武装序列并
+-- 吞掉本次常规触发（返回 true）。无素材/冷却中返回 false 走常规动画。
+function mod:TryArmPopup(topKey, curQ)
+    if not mod:PopupEventMatches(topKey, curQ) then return false end
+    if mod.popup or mod.popupArmed then return true end
+    if mod.popupCooldown > 0 then return false end
+    local animKey = mod:PopupAnimKey(topKey, curQ)
+    if not animKey then return false end
+    -- 该事件按「已由突脸播放完毕」处理：pending 型清闩锁，
+    -- 条件型（boss/half/item）置抑制，序列结束后不立刻重触发
+    if topKey == "hurt" then mod.hurtPending = false
+    elseif topKey == "active" then mod.activePending = false
+    elseif topKey == "pill" then mod.pillPending = false
+    elseif topKey == "card" then mod.cardPending = false
+    elseif topKey == "item" then
+        mod.itemPlayedQ = curQ
+        mod.suppressed["item"] = true
+    else
+        mod.suppressed[topKey] = true
+    end
+    mod.popupArmed = { animKey = animKey }
+    dlog("突脸触发: " .. tostring(animKey))
+    return true
+end
+
+-- 渲染段启动序列（homeX/homeY = 本帧常规渲染位置，即原位置）
+function mod:BeginPopup(homeX, homeY, efw, efh)
+    local armed = mod.popupArmed
+    mod.popupArmed = nil
+    if not armed then return end
+    -- 序列期间常规状态机冻结：回 main 常态（exit/return 段渲染常态动画）
+    mod.curState = nil
+    mod.idlePlaying = false
+    mod.idleKey = nil
+    mod.winkPlaying = false
+    mod.winkTimer = mod:NextWinkDelay()
+    mod:StartMain()
+    mod.popup = {
+        phase = "exit", t = 0,
+        animKey = armed.animKey,
+        animFrame = 1, animTimer = 0,
+        homeX = homeX, homeY = homeY,
+        efw = efw, efh = efh,
+    }
+end
+
+-- 突脸中途强行中止（总开关关闭/切换角色/新一局）：不进入冷却
+function mod:AbortPopup()
+    mod.popup = nil
+    mod.popupArmed = nil
+end
+
+-- smoothstep 缓入缓出插值：t∈[0,1]
+local function popupSmooth(t)
+    return t * t * (3 - 2 * t)
+end
+
+-- 每渲染帧推进突脸序列并渲染放大/移动中的桌宠。
+-- 返回 true = 序列仍在进行（调用方跳过常规渲染）。
+-- colorMod = 与常规渲染一致的 (Color) 调制参数封装。
+function mod:StepPopup(sw, sh)
+    local P = mod.popup
+    if not P then return false end
+    local pc = config.popup or {}
+    local moveF = tonumber(pc.moveFrames) or 30
+    if moveF < 1 then moveF = 1 end
+    local dir = pc.exitDir or "left"
+
+    -- 移出画面的目标点（按方向完全出屏；每帧按当前窗口尺寸重算）
+    local exitX, exitY = P.homeX, P.homeY
+    if dir == "left" then exitX = -P.efw
+    elseif dir == "right" then exitX = sw
+    elseif dir == "up" then exitY = -P.efh
+    else exitY = sh end
+
+    -- 放大渲染参数：宽度 = 窗口高度（等比缩放），帧宽从主帧精灵读取
+    local mainKey = "main_static"
+    local pl = Game():GetPlayer(0)
+    if pl then
+        local ok, k = pcall(function() return mod:MainTargetKey(pl) end)
+        if ok and k then mainKey = k end
+    end
+    local ms = mod:GetFrameSprite(mainKey, 1)
+    local fw, fh = config.frameSize, config.frameSize
+    if ms then
+        pcall(function()
+            local res = ms:GetSpriteResolution()
+            if res and res.X and res.X > 0 then fw, fh = res.X, res.Y or res.Y end
+        end)
+    end
+    local popScale = sh / fw
+    local popW, popH = fw * popScale, fh * popScale
+    local centerX = (sw - popW) / 2
+    local centerY = (sh - popH) / 2
+
+    P.t = P.t + 1
+    local k = popupSmooth(math.min(1, P.t / moveF))
+
+    -- 各阶段位置与显示内容
+    local drawX, drawY, scale, animKey, frameIdx
+    if P.phase == "exit" then
+        drawX = P.homeX + (exitX - P.homeX) * k
+        drawY = P.homeY + (exitY - P.homeY) * k
+        scale = config.scale
+        animKey, frameIdx = mod.curAnimKey, mod.curFrame   -- 常态动画滑出
+        if P.t >= moveF then P.phase, P.t = "enter", 0 end
+    elseif P.phase == "enter" then
+        -- 从底部边缘中点外（顶边贴窗口底缘）滑入至正中央
+        drawX = centerX
+        drawY = sh + (centerY - sh) * k
+        scale = popScale
+        animKey, frameIdx = mainKey, 1
+        if P.t >= moveF then P.phase, P.t = "play", 0 end
+    elseif P.phase == "play" then
+        drawX, drawY = centerX, centerY
+        scale = popScale
+        animKey, frameIdx = P.animKey, P.animFrame
+        -- 事件动画帧推进（与常规状态机同一套节奏）
+        local frames = mod:GetFrames(P.animKey)
+        local delay = frameDelay(P.animKey)
+        P.animTimer = P.animTimer + 1
+        if P.animTimer >= delay and frames then
+            P.animTimer = 0
+            P.animFrame = P.animFrame + 1
+            if P.animFrame > #frames then
+                P.phase, P.t = "leave", 0   -- 播完 -> 原路退出
+            end
+        end
+    elseif P.phase == "leave" then
+        drawX = centerX
+        drawY = centerY + (sh - centerY) * k
+        scale = popScale
+        animKey, frameIdx = mainKey, 1
+        if P.t >= moveF then P.phase, P.t = "return", 0 end
+    else   -- return：从屏外沿移出方向滑回原位置
+        drawX = exitX + (P.homeX - exitX) * k
+        drawY = exitY + (P.homeY - exitY) * k
+        scale = config.scale
+        animKey, frameIdx = mod.curAnimKey, mod.curFrame
+        if P.t >= moveF then
+            -- 序列结束：恢复常态，进入冷却
+            mod.popup = nil
+            mod.popupCooldown = tonumber(pc.cooldownFrames) or 300
+            mod.curState = nil
+            mod:StartMain()
+            return false
+        end
+    end
+
+    local s = (animKey and mod:GetFrameSprite(animKey, frameIdx)) or ms
+    if s then
+        local ok, err = pcall(function()
+            s.Scale = Vector(scale, scale)
+            s.Color = mod:OverlayColor()
+            s:Update()
+            s:Render(Vector(drawX, drawY), Vector.Zero, Vector.Zero)
+        end)
+        if not ok then dlog("突脸渲染失败: " .. tostring(err)) end
+    end
+    return true
+end
+
+-- 遮罩/高光/透明度调制色（常规渲染与突脸渲染共用同一套外观参数）
+function mod:OverlayColor()
+    local mask = tonumber(config.maskStrength) or 0
+    if mask < 0 then mask = 0 elseif mask > 1 then mask = 1 end
+    local bright = 1 - mask
+    local hl = tonumber(config.highlightStrength) or 0
+    if hl < 0 then hl = 0 elseif hl > 1 then hl = 1 end
+    local opacity = tonumber(config.opacity)
+    if type(opacity) ~= "number" then opacity = 1 end
+    if opacity < 0 then opacity = 0 elseif opacity > 1 then opacity = 1 end
+    return Color(bright, bright, bright, opacity, -hl, -hl, -hl)
+end
+
+-- ---------------------------------------------------------
 --  渲染：左下角叠加动画，按优先级选择状态
 -- ---------------------------------------------------------
 function mod:OnRender()
@@ -749,6 +1013,28 @@ function mod:OnRender()
         mod.enabled = not mod.enabled
     end
     if not mod.enabled then
+        mod:AbortPopup()   -- 总开关关闭：中止进行中的突脸序列
+        return
+    end
+
+    -- 突脸冷却递减
+    if mod.popupCooldown > 0 then
+        mod.popupCooldown = mod.popupCooldown - 1
+    end
+
+    -- 计算叠加图位置（物理像素坐标系）；突脸序列也用它取窗口尺寸
+    local physW, physH = 512, 320
+    pcall(function()
+        local w = Isaac.GetScreenWidth()
+        local h = Isaac.GetScreenHeight()
+        if w and h and w > 0 and h > 0 then physW, physH = w, h end
+    end)
+    local sw, sh = physW, physH
+
+    -- 突脸序列进行中：只推进/渲染突脸，常规状态机冻结
+    -- （事件 pending 闩锁保持，序列结束后自然响应）
+    if mod.popup then
+        mod:StepPopup(sw, sh)
         return
     end
 
@@ -769,9 +1055,9 @@ function mod:OnRender()
     -- 计算各状态激活与否（hurt/cardpill/active 为 pending 闩锁：
     -- 事件发生置位，动画 once 播完才消费，无固定时长截断）
     local states = {
-
         hurt     = config.states.hurt     and mod.hurtPending == true,
-        cardpill = config.states.cardpill and mod.cardpillPending == true,
+        pill     = config.states.pill     and mod.pillPending == true,
+        card     = config.states.card     and mod.cardPending == true,
         active   = config.states.active   and mod.activePending == true,
         boss     = config.states.boss     and safe(function() return mod:ComputeBossFight() end, false),
         item     = config.states.item     and curQ ~= nil,
@@ -811,6 +1097,10 @@ function mod:OnRender()
     end
 
     if topKey and topKey ~= mod.curState then
+        -- 突脸接管：命中 popup 配置的事件时武装序列并吞掉本次常规触发
+        if mod:TryArmPopup(topKey, curQ) then
+            return   -- 本帧余下工作交给渲染段的 BeginPopup/StepPopup
+        end
         -- 进入 / 切换到某事件状态：开始播放对应动画
         mod.curState = topKey
         if topKey == "idle" then
@@ -836,8 +1126,15 @@ function mod:OnRender()
             mod.winkTimer = mod:NextWinkDelay()
         else
             local spec = config.events[topKey]
-            local vkey = mod:PickEventKey(spec)
-            mod:StartAnim(vkey, config.playback[topKey] or "once")
+            local vkey = mod:ResolveEventKey(topKey, spec)
+            if vkey then
+                mod:StartAnim(vkey, config.playback[topKey] or "once")
+            else
+                -- 选中键素材不可用（variants 部分缺失等）：回 main 并抑制，
+                -- 防止每帧重进该状态（pill/card 回退链已在 ResolveEventKey 处理）
+                mod.curState = nil
+                mod.suppressed[topKey] = true
+            end
             -- 非待机/眨眼事件打断：清掉标记，事件结束后不续播
             mod.idlePlaying = false
             mod.winkPlaying = false
@@ -852,6 +1149,14 @@ function mod:OnRender()
             mod:StartMain()          -- 事件结束/被打断 -> 重新随机主动画
         elseif not mod.curAnimKey then
             mod:StartMain()
+        end
+        -- 常态贴图即时切换：半血 / Lost 无圣盾状态进入或解除时立即换图
+        -- （StartMain 只在进入 main 时判定一次，条件中途翻转由这里响应）
+        if mod.curAnimKey and config.main and config.main.sadStatic then
+            local okTK, tk = pcall(function() return mod:MainTargetKey(player) end)
+            if okTK and tk and tk ~= mod.curAnimKey then
+                mod:StartMain()
+            end
         end
         mod:AdvanceAnim()
 
@@ -902,7 +1207,8 @@ function mod:OnRender()
             --     pending 无超时，若被抑制且 pending 恒真会永久卡死；
             --     连续受伤在下一次回调重新置位，自然重新触发）
             --   条件型（boss/half/item）：置抑制，条件消失后才可再触发
-            if topKey == "cardpill" then mod.cardpillPending = false
+            if topKey == "pill" then mod.pillPending = false
+            elseif topKey == "card" then mod.cardPending = false
             elseif topKey == "active" then mod.activePending = false
             elseif topKey == "hurt" then mod.hurtPending = false
             elseif topKey == "idle" then mod.idlePlaying = false
@@ -918,15 +1224,7 @@ function mod:OnRender()
         end
     end
 
-    -- 计算叠加图位置（物理像素坐标系）
-    local physW, physH = 512, 320
-    pcall(function()
-        local w = Isaac.GetScreenWidth()
-        local h = Isaac.GetScreenHeight()
-        if w and h and w > 0 and h > 0 then physW, physH = w, h end
-    end)
-    local sw, sh = physW, physH
-
+    -- 叠加图渲染精灵与帧尺寸
     local s = nil
     if mod.curAnimKey then
         s = mod:GetFrameSprite(mod.curAnimKey, mod.curFrame)
@@ -956,27 +1254,19 @@ function mod:OnRender()
     local posX = config.margin
     local posY = sh - efh + botPadScaled - config.offsetY
 
-    -- 遮罩强度 + 高光强度 + 透明度：渲染前调制桌宠颜色，对抗游戏滤镜过曝。
-    --   遮罩强度  = 乘法压暗（比例降亮度，暗部几乎不变）      -> Color RGB 乘法分量
-    --   高光强度  = 线性减亮（统一下移，过曝亮部下降最明显）  -> Color RGB 加法分量(负)
-    --   透明度    = 整体不透明度                              -> Color alpha 分量
-    local mask = tonumber(config.maskStrength) or 0
-    if mask < 0 then mask = 0 elseif mask > 1 then mask = 1 end
-    local bright = 1 - mask
-    local hl = tonumber(config.highlightStrength) or 0
-    if hl < 0 then hl = 0 elseif hl > 1 then hl = 1 end
-    local opacity = tonumber(config.opacity)
-    if type(opacity) ~= "number" then opacity = 1 end
-    if opacity < 0 then opacity = 0 elseif opacity > 1 then opacity = 1 end
-
-    -- 限制在屏幕内（素材尺寸异常时也不至于整张跑到屏外）
     local drawX = math.min(math.max(0, posX), math.max(0, sw - efw))
     local drawY = math.min(math.max(0, posY), math.max(0, sh - efh))
+
+    -- 突脸序列启动（状态机段已武装）：以本帧常规位置为「原位置」。
+    -- 当帧仍按常规渲染（= exit 起点位置），下帧起由 StepPopup 接管。
+    if mod.popupArmed then
+        mod:BeginPopup(drawX, drawY, efw, efh)
+    end
 
     if s then
         local ok, err = pcall(function()
             s.Scale = Vector(scale, scale)
-            s.Color = Color(bright, bright, bright, opacity, -hl, -hl, -hl)
+            s.Color = mod:OverlayColor()
             s:Update()
             s:Render(Vector(drawX, drawY), Vector.Zero, Vector.Zero)
         end)
@@ -1042,7 +1332,8 @@ function mod:OnPlayerInit(player)
     mod.curFrame = 1
     mod.frameTimer = 0
 
-    mod.cardpillPending = false
+    mod.pillPending = false
+    mod.cardPending = false
     mod.activePending = false
     mod.hurtPending = false
     mod.suppressed = {}
@@ -1054,6 +1345,8 @@ function mod:OnPlayerInit(player)
     mod.idleKey = nil
     mod.winkPlaying = false
     mod.winkTimer = mod:NextWinkDelay()   -- 新一局：随机延迟后第一次眨眼
+    mod:AbortPopup()      -- 新一局：中止残留的突脸序列
+    mod.popupCooldown = 0
 end
 
 -- ---------------------------------------------------------
@@ -1348,7 +1641,8 @@ local function registerMCM(MCM)
     MCM.AddSpace(N, "状态开关")
     local stateLabels = {
         { "hurt",     "受击动画(火焰/爆炸/激光等)" },
-        { "cardpill", "卡牌/药丸动画" },
+        { "pill",     "药丸动画" },
+        { "card",     "卡牌动画" },
         { "active",   "使用主动/副主动道具动画" },
         { "boss",     "Boss 战动画" },
         { "item",     "房间道具质量动画" },
@@ -1502,6 +1796,61 @@ local function registerMCM(MCM)
         function(v) config.halfHealth.oneHealthThreshold = v end,
         0, 6, 1, "店主类角色阈值(半心数)",
         { "店主(Keeper)以整数心计算：2 = 1 整心（默认）" })
+    MCM.AddSpace(N, "半血判定")
+    addBool("半血判定",
+        function() return config.lostSad.enabled end,
+        function(v) config.lostSad.enabled = v end,
+        "Lost无圣盾时悲伤常态",
+        { "角色为 Lost/堕化Lost 且没有圣盾(Holy Mantle)时",
+          "常态贴图切换为 main_sad.png，眨眼用半血档",
+          "拿到圣斗篷/圣卡等圣盾效果后恢复 main.png" })
+
+    -- ---------- 突脸 ----------
+    MCM.AddText(N, "突脸", function() return "桌宠突脸（触发事件后放大冲入画面中央）" .. petTag() end)
+    MCM.AddSpace(N, "突脸")
+    addBool("突脸",
+        function() return config.popup.enabled end,
+        function(v) config.popup.enabled = v end,
+        "启用桌宠突脸",
+        { "触发下方所选事件时：桌宠滑出画面 -> 放大到宽度=窗口高度",
+          "从底部中点滑入至正中央播放该事件动画 -> 原路退出滑回原位" })
+    local popupEventOptions = {
+        { value = "item0", label = "item0（0级道具）" },
+        { value = "item1", label = "item1（1级道具）" },
+        { value = "item2", label = "item2（2级道具）" },
+        { value = "item3", label = "item3（3级道具）" },
+        { value = "item4", label = "item4（4级道具）" },
+        { value = "hurt",  label = "hurt（受击）" },
+        { value = "boss",  label = "boss（Boss战）" },
+        { value = "half",  label = "half（半血）" },
+        { value = "active", label = "active（用主动道具）" },
+        { value = "card",  label = "card（用卡牌）" },
+        { value = "pill",  label = "pill（吃药丸）" },
+    }
+    addChoice("突脸",
+        function() return config.popup.event end,
+        function(v) config.popup.event = v end,
+        popupEventOptions, "触发事件",
+        { "该事件触发时以突脸方式播放（替代常规小动画）" })
+    addChoice("突脸",
+        function() return config.popup.exitDir end,
+        function(v) config.popup.exitDir = v end,
+        { { value = "left",  label = "向左(left)" },
+          { value = "right", label = "向右(right)" },
+          { value = "up",    label = "向上(up)" },
+          { value = "down",  label = "向下(down)" } },
+        "桌宠移出方向",
+        { "突脸开始时桌宠按此方向滑出游戏画面" })
+    addNumSec("突脸",
+        function() return config.popup.moveFrames end,
+        function(v) config.popup.moveFrames = v end,
+        0.1, 3, 0.1, "每段移动时长",
+        { "滑出/滑入/退出/滑回每段的时长（秒）" })
+    addNumSec("突脸",
+        function() return config.popup.cooldownFrames end,
+        function(v) config.popup.cooldownFrames = v end,
+        0, 60, 0.5, "结束后冷却",
+        { "一次突脸结束后多久内不再触发（防连续事件刷屏）" })
 
     -- ---------- 外观 / 位置 ----------
     MCM.AddText(N, "外观位置", function() return "叠加动画尺寸与左下角位置" .. petTag() end)

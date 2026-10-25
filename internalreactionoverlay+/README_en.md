@@ -10,6 +10,11 @@ main state, it occasionally plays a random idle animation.
 > Requires: The Binding of Isaac: Repentance+
 > API reference: [IsaacDocs (wofsauge)](https://wofsauge.github.io/IsaacDocs/rep/)
 >
+> **v3.2**: separate pill/card animations (each with its own asset, auto-fallback
+> to the shared animation when missing), pet popup (on a configurable event the
+> pet slides out, zooms to window height, enters from bottom center, plays at
+> screen center, then returns), and a sad idle sprite for Lost/Tainted Lost
+> without a Holy Mantle shield.
 > **v3.1**: every desktop-pet character now keeps its own independent settings
 > profile (all animation/appearance options are saved per character and
 > auto-applied on switch; old saves migrate automatically).
@@ -39,6 +44,7 @@ resources/gfx/pets/
 ├── Angle/                       # character 1 (folder name = character name)
 │   ├── main.png  main_sad.png   # static single-frame sprites (normal / half health)
 │   ├── Medicine/  activity/  boss/  half/  hurt/
+│   ├── pill/  card/             # pill/card animations (optional, fall back to Medicine)
 │   ├── idle1/ ~ idle4/          # idle animations
 │   ├── item0/ ~ item4/          # item-quality animations
 │   └── wink/  wink1/            # blink animations (full health / half health)
@@ -95,16 +101,19 @@ Characters are bundled: DeepseekWhite,DeepseekSchool,Genimi,Angle and Rain, all 
 | Game event | Animation key | Character folder | Playback |
 |---|---|---|---|
 | Normal (full health) | main_static | main.png | static, persistent |
-| Normal (half health) | main_sad | main_sad.png | static, persistent |
+| Normal (half health / Lost without shield) | main_sad | main_sad.png | static, persistent |
 | Hurt (environment damage / monster attacks) | hurt | hurt/ | once |
-| Card / pill used | Medicine | Medicine/ | once |
+| Pill used | pill | pill/ | once |
+| Card used | card | card/ | once |
+| Shared card/pill fallback | Medicine | Medicine/ | once |
 | Active item / pocket active used | activity | activity/ | once |
 | Boss fight (uncleared boss room) | boss | boss/ | once |
 | Half health (≤ half red heart) | half | half/ | once |
 | Unpicked item in room | item0~item4 | item0/ ~ item4/ | once or loop |
 | Random idle | idle1~idle4* | idle1/ ~ idle4/ | once |
 | Blink (full health) | wink | wink/ | loop |
-| Blink (half health) | wink1 | wink1/ | loop |
+| Blink (half health / shieldless Lost) | wink1 | wink1/ | loop |
+| Pet popup (configurable event, default item4) | same as event | same as event | popup sequence |
 
 > \* Frame counts vary per character (e.g. Angle's hurt has 3 frames, TangTang's has 8;
 > see `internalreactionoverlay_frames.lua`). TangTang ships an extra idle5, but the
@@ -154,6 +163,62 @@ Decision tree (`mod:IsMonsterDamage`):
 - Detection uses `MC_ENTITY_TAKE_DMG` (player only) + `CallbackPriority.EARLY`,
   so errors thrown by other mods' callbacks cannot skip it.
 
+### Pills and cards (separate animations)
+
+Using a pill and using a card are **two independent events** and can have
+different animations:
+
+- Pill → `pill` animation (`pill/` folder); card → `card` animation (`card/`);
+- When the character lacks the dedicated asset it **automatically falls back**
+  to the shared `Medicine` animation (legacy asset sets keep working unchanged);
+  adding a `pill/` or `card/` folder switches to the dedicated animation;
+- The fallback chain honors the pool borrow (`petFallback`) as well;
+- Independent toggles: `config.states.pill` / `config.states.card` (MCM state page);
+- Detection callbacks: pills via `MC_USE_PILL`, cards via `MC_USE_CARD` — no cross-triggering.
+
+### Pet popup
+
+On a **configured event** the pet skips the regular in-place animation and
+performs a popup sequence instead:
+
+1. **Slide out**: smoothly leaves the game window from its corner (direction
+   configurable: up/down/left/right, default left);
+2. **Zoom in**: the default animation scales up to **width = game window height**
+   (aspect preserved) and slides in from the bottom-edge midpoint to the exact
+   center of the screen;
+3. **Play**: plays the event's animation at screen center, zoomed, in full;
+4. **Leave**: slides back out along the same path (bottom midpoint);
+5. **Return**: glides back to its original corner from the exit direction and
+   resumes the normal idle animation.
+
+- Triggering event configurable (`config.popup.event`, default `item4`):
+  `item0`~`item4` / `hurt` / `boss` / `half` / `active` / `card` / `pill`;
+- While the sequence plays, the regular state machine is frozen (the triggering
+  event is played by the popup itself; pending events queue up and play after
+  the sequence — nothing is lost);
+- A cooldown follows each popup (default 5 s, `config.popup.cooldownFrames`) so
+  boss rooms or damage streaks can't spam the sequence;
+- Per-segment slide duration configurable (`config.popup.moveFrames`, default
+  0.5 s, ease-in-out);
+- Toggle and all parameters live in the MCM popup page (saved per character);
+- Skipped/aborted automatically when the event's assets are missing, the master
+  toggle is off, or the character is switched.
+
+### Sad idle for Lost / Tainted Lost
+
+While playing **Lost or Tainted Lost without a Holy Mantle shield** (the item,
+the Holy Card, and Tainted Lost's innate mantle all count), the normal idle
+sprite automatically switches to `main_sad.png`, and blinking uses the
+half-health animation (wink1). Getting a shield switches it back to `main.png`
+immediately.
+
+- Detection: `player:HasNullEffect(NullItemEffect.ID_HOLY_MANTLE)`;
+- Shares the sprite and blink tier with the half-health sadness (either
+  condition enables it);
+- Toggle: `config.lostSad.enabled` (MCM half-health page, per character, on by default);
+- Lost never triggers half-health in the first place (ghost-type), so its
+  sadness depends solely on the shield.
+
 ### Active item usage
 
 Using an **active item** (primary or pocket slot) plays the `activity` animation once.
@@ -193,7 +258,7 @@ picking up a higher-quality item switches to the new animation immediately.
 - **Animation priority** (only a higher priority interrupts a playing animation;
   interrupted events are deferred and replayed in full afterwards):
 ```
-item4 > half > item3 > item2 > item1 > item0 > Medicine(card/pill) > Activity(active item) > hurt = boss > idle1~4 > wink = wink1
+item4 > half > item3 > item2 > item1 > item0 > pill = card/Medicine > Activity(active item) > hurt = boss > idle1~4 > wink = wink1
 ```
   - the item state's priority follows the room's current **highest quality**
     (item4 outranks half health; item0 is below it);
@@ -243,6 +308,8 @@ All tunables live in `internalreactionoverlay_config.lua`; no need to touch main
 | `hurt.monsterDamage` | true | per character | Monster attacks (body/tears/laser/bombs) also trigger hurt |
 | `hurt.damageFlags` | 9 types | shared factory | Damage types that trigger hurt (DamageFlag bit flags) |
 | `halfHealth` | — | per character | Half-health rule: threshold (≤1 half heart) / count soul hearts / special characters (Lost immune, Keeper at 1 full heart) |
+| `lostSad` | enabled=true | per character | Sad idle for Lost/Tainted Lost without Holy Mantle (main_sad + half-health blink tier) |
+| `popup` | — | per character | Pet popup: enabled / event (default item4) / exitDir (default left) / moveFrames (30) / cooldownFrames (300) |
 | `itemQuality` | — | per character (animKeys shared) | Item-quality animation: enabled / mode (once/loop) / graceFrames / animKeys mapping |
 | `events` | — | shared factory | Event → animation key mapping (fixed key or weighted variants) |
 | `playback` | once | shared factory | Playback mode per state (once / loop) |
@@ -275,13 +342,14 @@ Every change is persisted into the save. Without MCM, edit
 |---|---|---|
 | **总开关 (Master)** | Enable the whole overlay; toggle hotkey (F3 by default) | global |
 | **桌宠角色 (Character)** | Active character (cycle through the pool, effective immediately, applies its own profile); fallback-to-other-characters toggle | switch = global; fallback = global |
-| **状态开关 (State switches)** | Individual toggles: hurt / card & pill / active item / boss / item quality / half health / idle / blink | per character |
+| **状态开关 (State switches)** | Individual toggles: hurt / pill / card / active item / boss / item quality / half health / idle / blink | per character |
 | **动画速度 (Speed)** | Speed multiplier (0.25–4); default animation fps | per character |
 | **眨眼间隔 (Blink intervals)** | Full-health & half-health: mode (random/fixed), random min/max, fixed interval | per character |
 | **待机 (Idle)** | Idle delay (1–120 s); trigger chance per second (0–100%) | per character |
 | **受击 (Hurt)** | Monster attacks also trigger; ignore non-penalty damage | per character |
 | **道具质量 (Item quality)** | Toggle; playback mode (once/loop); new-room detection grace | per character |
-| **半血判定 (Half health)** | Threshold (half hearts); count soul/black hearts; Keeper threshold | per character |
+| **半血判定 (Half health)** | Threshold (half hearts); count soul/black hearts; Keeper threshold; Lost sad-idle toggle | per character |
+| **突脸 (Popup)** | Popup toggle; trigger event (item0~4/hurt/boss/half/active/card/pill); exit direction (up/down/left/right); slide duration; cooldown | per character |
 | **外观位置 (Appearance)** | Scale / horizontal offset / vertical offset / mask strength / highlight strength / opacity (darkening & translucency, for overexposing filters) | per character |
 | **其它 (Other)** | Top-left debug data toggle | global |
 
@@ -320,6 +388,7 @@ python gen_anim.py
 | `death.png` | death_static | death sprite (optional; wire it up in events yourself) |
 | `voice_training/` | activity | legacy folder-name alias for `activity/` |
 | `activity/` `boss/` `hurt/` `half/` `Medicine/` `wink/` `wink1/` | same name | `config.events` |
+| `pill/` `card/` | pill / card | `config.events` (dedicated pill/card animations; fall back to Medicine when missing) |
 | `idle1/` ~ `idle5/` | same name | `config.idle.entries` |
 | `item0/` ~ `item4/` | same name | `config.itemQuality.animKeys` |
 
@@ -457,6 +526,16 @@ skip this mod thanks to the EARLY priority.
 A: The active character is missing that asset. By default it is not borrowed — the
 event doesn't trigger and the pet stays idle. To borrow it across characters,
 enable "缺素材时借用其它角色" (`petFallback`) in MCM.
+
+**Q: Want different animations for pills and cards?**
+A: Add a `pill/` and/or `card/` folder to the character, then run
+`python gen_anim.py`. Without dedicated assets both fall back to the shared
+Medicine animation.
+
+**Q: Popups too frequent / too fast?**
+A: Tune "结束后冷却" (cooldown, default 5 s) and "每段移动时长" (slide duration,
+default 0.5 s) on the MCM popup page, or switch the trigger event / disable it.
+Events firing during a popup queue up and play afterwards — nothing is lost.
 
 **Q: Do the characters' settings interfere with each other?**
 A: No. Every character's animation/appearance settings are saved independently —

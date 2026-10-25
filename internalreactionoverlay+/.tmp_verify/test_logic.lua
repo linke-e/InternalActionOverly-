@@ -3,7 +3,8 @@
 -- 覆盖：出厂捕获 / 切换隔离 / 存档 v2 往返 / v1 迁移 / 非法档防御 /
 --       自动禁用不污染 profile / animHold 独立
 
-local MODDIR = "E:/Cache/RemoteStore/Isaac/internalreactionoverlay+"
+local MODDIR = (os and os.getenv and os.getenv("IRO_MODDIR"))
+    or "D:/RemoteStorge/InternalActionOverly-/internalreactionoverlay+"
 local passCnt, failList = 0, {}
 
 local function ok(cond, msg)

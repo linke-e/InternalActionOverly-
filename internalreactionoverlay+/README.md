@@ -8,6 +8,9 @@
 > 适用版本：以撒的结合：忏悔+ (The Binding of Isaac: Repentance+)
 > 文档参考：[IsaacDocs (wofsauge)](https://wofsauge.github.io/IsaacDocs/rep/)
 >
+> **v3.2**：药丸/卡牌动画分离（各自专属动画，缺素材自动回退共用动画）、
+> 桌宠突脸（触发指定事件时滑出画面，放大到窗口高度冲入正中央播放后返回）、
+> Lost / 堕化Lost 无圣盾时常态切换为悲伤贴图。
 > **v3.1**：每个桌宠角色独立保存全部动画/外观配置（互不影响，切换角色自动应用），
 > 旧存档自动迁移；游戏内 MCM 全部设置可用，各设置页显示当前角色。
 
@@ -34,6 +37,7 @@ resources/gfx/pets/
 ├── Angle/                       # 角色一（文件夹名即角色名）
 │   ├── main.png  main_sad.png   # 常态/半血静态单帧
 │   ├── Medicine/  activity/  boss/  half/  hurt/
+│   ├── pill/  card/             # 药丸/卡牌专属动画（可选，缺省回退 Medicine）
 │   ├── idle1/ ~ idle4/          # 待机动画
 │   ├── item0/ ~ item4/          # 道具质量动画
 │   └── wink/  wink1/            # 眨眼动画（满血/半血）
@@ -81,16 +85,19 @@ resources/gfx/pets/
 | 游戏事件 | 动画键 | 角色文件夹 | 播放模式 |
 |---|---|---|---|
 | 常态（满血） | main_static | main.png | 常驻静态 |
-| 常态（半血 ≤半颗心） | main_sad | main_sad.png | 常驻静态 |
+| 常态（半血 ≤半颗心 / Lost 无圣盾） | main_sad | main_sad.png | 常驻静态 |
 | 受击（环境伤害/怪物攻击） | hurt | hurt/ | 一次 |
-| 使用卡牌 / 药丸 | Medicine | Medicine/ | 一次 |
+| 使用药丸 | pill | pill/ | 一次 |
+| 使用卡牌 | card | card/ | 一次 |
+| 药丸/卡牌共用回退 | Medicine | Medicine/ | 一次 |
 | 使用主动/副主动道具 | activity | activity/ | 一次 |
 | Boss 战（Boss 房未清空） | boss | boss/ | 一次 |
 | 半血（总血量 ≤ 半颗心） | half | half/ | 一次 |
 | 房间存在未拾取道具 | item0~item4 | item0/ ~ item4/ | 一次或循环 |
 | 待机随机 | idle1~idle4* | idle1/ ~ idle4/ | 一次 |
 | 眨眼（满血） | wink | wink/ | 循环 |
-| 眨眼（半血） | wink1 | wink1/ | 循环 |
+| 眨眼（半血/Lost 无盾） | wink1 | wink1/ | 循环 |
+| 桌宠突脸（触发事件可配，默认 item4） | 同所配事件 | 同所配事件 | 突脸序列 |
 
 > \* 帧数因角色而异（如 Angle 的 hurt 3 帧、TangTang 的 hurt 8 帧；详见
 > `internalreactionoverlay_frames.lua`）。Rain 收录了 idle5 素材，默认待机池只启用
@@ -135,6 +142,49 @@ TNT（DAMAGE_TNT）、中毒/燃烧（DAMAGE_POISON_BURN）、塌陷坑洞（DAM
 - 受击判定使用 `MC_ENTITY_TAKE_DMG`（仅玩家）+ `CallbackPriority.EARLY`，
   保证即使其它 mod 的伤害回调报错也不会被跳过。
 
+### 药丸与卡牌（独立动画）
+
+使用药丸、使用卡牌是**两个独立事件**，可分别配不同动画：
+
+- 使用药丸 → `pill` 动画（`pill/` 文件夹）；使用卡牌 → `card` 动画（`card/` 文件夹）；
+- 角色缺少专属素材时**自动回退**到共用动画 `Medicine`（老素材集无需改动，
+  行为与旧版一致）；补上 `pill/` 或 `card/` 文件夹后自动改用专属动画；
+- 回退判定含素材池借用（`petFallback` 开启时同样生效）；
+- 开关独立：`config.states.pill` / `config.states.card`（MCM「状态开关」页）；
+- 检测回调：药丸 `MC_USE_PILL`、卡牌 `MC_USE_CARD`，互相不会误触发。
+
+### 桌宠突脸（Popup）
+
+触发**指定事件**时，桌宠不再原地播小动画，而是演出一段突脸序列：
+
+1. **滑出**：从原位置平滑滑出游戏画面（方向可配：上/下/左/右，默认左）；
+2. **冲入**：默认动画放大到**宽度 = 游戏窗口高度**（等比缩放），从窗口底部
+   边缘中点平滑滑入至画面正中央；
+3. **播放**：在正中央以放大尺寸播放该事件的动画（播完整段）；
+4. **退场**：沿原路（底部中点方向）平滑滑出画面；
+5. **归位**：从滑出方向平滑回到原位置，恢复常态动画。
+
+- 触发事件可配（`config.popup.event`，默认 `item4`）：`item0`~`item4` /
+  `hurt` / `boss` / `half` / `active` / `card` / `pill`；
+- 序列期间常规事件动画冻结（触发的事件由突脸代播，期间的 pending 事件
+  顺延到序列结束后正常播放，不丢失）；
+- 一次突脸结束后进入冷却（默认 5 秒，`config.popup.cooldownFrames`），
+  防止 Boss 房/连续受击等场景反复突脸刷屏；
+- 每段移动时长可配（`config.popup.moveFrames`，默认 0.5 秒，缓入缓出）；
+- 开关与全部参数在 MCM「突脸」页（每角色独立保存）；
+- 触发事件无素材、总开关关闭、切换角色时自动跳过/中止突脸。
+
+### Lost / 堕化Lost 悲伤常态
+
+角色为 **Lost / 堕化Lost（Tainted Lost）且身上没有圣盾**（Holy Mantle 效果：
+圣斗篷道具、圣卡、堕化Lost固有盾均计入）时，常态贴图自动切换为
+`main_sad.png`，眨眼也用半血档（wink1）；拿到圣盾后立即恢复 `main.png`。
+
+- 判定：`player:HasNullEffect(NullItemEffect.ID_HOLY_MANTLE)`；
+- 与半血悲伤共用贴图与眨眼档（两者任一成立即悲伤）；
+- 开关：`config.lostSad.enabled`（MCM「半血判定」页，每角色独立，默认开启）；
+- Lost 本就不判半血（游魂类角色），其悲伤只由圣盾决定。
+
 ### 主动/副主动道具使用
 
 角色**使用主动道具**（主槽或副槽）时播放一次 `activity` 动画。
@@ -173,7 +223,7 @@ Quality 0→item0、1→item1、2→item2、3→item3、4→item4。
 - **动画优先级**（只有更高优先级能打断正在播放的动画；被打断的事件顺延，
   当前动画播完后重新完整播放）：
 ```
-item4 > half > item3 > item2 > item1 > item0 > Medicine(卡牌/药丸) > Activity(主动道具) > hurt(受击) = boss > idle1~4 > wink = wink1
+item4 > half > item3 > item2 > item1 > item0 > pill(药丸) = card(卡牌)/Medicine > Activity(主动道具) > hurt(受击) = boss > idle1~4 > wink = wink1
 ```
   - item 的优先级随房间最高**质量**动态变化（item4 高于半血，item0 低于半血）；
   - **受击与 Boss 战同级**：不互相打断，先播者保持，另一个顺延；
@@ -216,6 +266,8 @@ item4 > half > item3 > item2 > item1 > item0 > Medicine(卡牌/药丸) > Activit
 | `hurt.monsterDamage` | true | 每角色 | 怪物攻击伤害（本体/弹幕/激光/怪物炸弹）也触发受击 |
 | `hurt.damageFlags` | 9 种 | 出厂共用 | 触发受击动画的伤害类型列表（DamageFlag 位标志） |
 | `halfHealth` | — | 每角色 | 半血判定：阈值（≤1 半心）/ 是否计灵魂心 / 特殊角色（游魂不触发、店主 1 整心） |
+| `lostSad` | enabled=true | 每角色 | Lost/堕化Lost 无圣盾时常态悲伤（main_sad + 半血眨眼档） |
+| `popup` | — | 每角色 | 桌宠突脸：enabled / event(默认 item4) / exitDir(默认 left) / moveFrames(30) / cooldownFrames(300) |
 | `itemQuality` | — | 每角色（animKeys 出厂共用） | 道具质量动画：enabled / mode(once/loop) / graceFrames 进新房检测冷却 / animKeys 映射 |
 | `events` | — | 出厂共用 | 事件 → 动画键映射（可改动画或加变体权重） |
 | `playback` | once | 出厂共用 | 各状态播放模式（once / loop） |
@@ -244,13 +296,14 @@ item4 > half > item3 > item2 > item1 > item0 > Medicine(卡牌/药丸) > Activit
 |---|---|---|
 | **总开关** | 启用整个叠加层；切换快捷键（默认 F3） | 全局 |
 | **桌宠角色** | 当前角色（左右循环切换素材池，立即生效并应用其专属配置）；缺素材时是否借用其它角色 | 角色切换=全局；借用开关=全局 |
-| **状态开关** | 受击 / 卡牌药丸 / 主动道具 / Boss / 道具质量 / 半血 / 待机 / 眨眼 的独立开关 | 每角色 |
+| **状态开关** | 受击 / 药丸 / 卡牌 / 主动道具 / Boss / 道具质量 / 半血 / 待机 / 眨眼 的独立开关 | 每角色 |
 | **动画速度** | 速度倍率（0.25~4）；默认动画帧率 | 每角色 |
 | **眨眼间隔** | 满血/半血两档：间隔模式（随机/固定）、随机间隔上下限、固定间隔 | 每角色 |
 | **待机** | 静置多久后开始待机（1~120 秒）；每秒触发概率（0~100%） | 每角色 |
 | **受击** | 怪物攻击也触发；忽略非惩罚性伤害 | 每角色 |
 | **道具质量** | 开关；播放模式（播一遍/持续循环）；进新房检测冷却 | 每角色 |
-| **半血判定** | 普通角色阈值（半心数）；灵魂心/黑心是否计入；店主类角色阈值 | 每角色 |
+| **半血判定** | 普通角色阈值（半心数）；灵魂心/黑心是否计入；店主类角色阈值；Lost 无圣盾悲伤开关 | 每角色 |
+| **突脸** | 突脸开关；触发事件（item0~4/hurt/boss/half/active/card/pill）；移出方向（上下左右）；每段移动时长；结束后冷却 | 每角色 |
 | **外观位置** | 缩放倍数 / 水平偏移 / 上下偏移 / 遮罩强度 / 高光强度 / 透明度（压暗与半透，滤镜过曝时用） | 每角色 |
 | **其它** | 左上角调试数据开关 | 全局 |
 
@@ -287,6 +340,7 @@ python gen_anim.py
 | `death.png` | death_static | 死亡静态（可选，需自行在 events 引用） |
 | `voice_training/` | activity | 旧目录名兼容，等价 `activity/` |
 | `activity/` `boss/` `hurt/` `half/` `Medicine/` `wink/` `wink1/` | 同名键 | `config.events` |
+| `pill/` `card/` | pill / card | `config.events`（药丸/卡牌专属动画，缺素材回退 Medicine） |
 | `idle1/` ~ `idle5/` | 同名键 | `config.idle.entries` |
 | `item0/` ~ `item4/` | 同名键 | `config.itemQuality.animKeys` |
 
@@ -407,6 +461,14 @@ A：确认受伤时真的掉血（飞行、圣斗篷等免疫状态下不会触�
 **Q：切角色后某个动画不播放？**
 A：当前角色缺该素材，默认不借用他人素材——对应事件不触发，桌宠保持待机动画。
 想让该动画跨角色借用，打开 MCM「桌宠角色-缺素材时借用其它角色」（`petFallback`）即可。
+
+**Q：药丸和卡牌想用不同动画？**
+A：在角色文件夹放 `pill/`（药丸）与 `card/`（卡牌）动画文件夹，运行
+`python gen_anim.py` 重建清单即可；没有专属素材时自动回退共用动画 Medicine。
+
+**Q：突脸太频繁/太快？**
+A：MCM「突脸」页调「结束后冷却」（默认 5 秒）与「每段移动时长」（默认 0.5 秒），
+或直接换触发事件/关闭突脸。突脸期间触发的事件会在结束后顺延播放，不会丢失。
 
 **Q：两个角色的设置会互相影响吗？**
 A：不会。每个角色的动画/外观设置独立保存，MCM 调整只影响当前角色，

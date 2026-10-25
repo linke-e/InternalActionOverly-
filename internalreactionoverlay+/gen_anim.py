@@ -432,10 +432,17 @@ def check_pet_assets(root, per_pet_grouped, pet_dirs):
                         f.lower().endswith(".png") for f in os.listdir(full)):
                     print("  [!] 角色「%s」动画文件夹「%s」为空（无 PNG，不会进清单）"
                           % (name, d))
-        # 5) config 引用缺失报告：该角色这些事件不触发（可开 petFallback 借用）
-        missing = []
+        # 5) config 引用缺失报告：普通键缺失=该事件不触发（可开 petFallback
+        #    借用）；pill/card 缺专属素材=自动回退 cardpill 共用动画（事件照常）
+        FALLBACK_KEYS = {"pill": "Medicine", "card": "Medicine"}
+        missing, fallback = [], []
         for k, ln in refs:
-            if k not in keys and all(k != mk for mk, _ in missing):
+            if k in keys:
+                continue
+            if k in FALLBACK_KEYS and FALLBACK_KEYS[k] in keys:
+                if all(k != mk for mk, _ in fallback):
+                    fallback.append((k, ln))
+            elif all(k != mk for mk, _ in missing):
                 missing.append((k, ln))
         if missing:
             lines = ", ".join("L%d" % ln for _, ln in missing[:8])
@@ -443,6 +450,12 @@ def check_pet_assets(root, per_pet_grouped, pet_dirs):
                 name, ", ".join(k for k, _ in missing)))
             print("      该角色这些事件不触发/不显示；开 petFallback 可借用其它角色；"
                   "引用位置: %s%s" % (lines, "…" if len(missing) > 8 else ""))
+        if fallback:
+            print("  [i] 角色「%s」缺少药丸/卡牌专属动画键: %s" % (
+                name, ", ".join(k for k, _ in fallback)))
+            print("      使用药丸/卡牌时自动回退 Medicine 共用动画（事件照常触发）；"
+                  "补 %s 文件夹后改用专属动画"
+                  % ", ".join("%s/" % k for k, _ in fallback))
     print("=" * 60)
     return hard
 

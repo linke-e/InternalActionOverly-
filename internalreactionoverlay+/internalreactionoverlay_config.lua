@@ -223,7 +223,10 @@ local config = {
         boss     = { key = "boss" },               -- Boss 场景
         half     = { key = "half" },               -- 半血/半残
         hurt     = { key = "hurt" },               -- 受击（伤害类型见 hurt.damageFlags）
-        cardpill = { key = "Medicine" },           -- 使用卡牌/药丸
+        pill     = { key = "pill" },               -- 使用药丸（角色缺 pill 素材时回退 cardpill 动画）
+        card     = { key = "card" },               -- 使用卡牌（角色缺 card 素材时回退 cardpill 动画）
+        -- 药丸/卡牌共用动画：pill/card 专属素材缺失时的回退（老素材集无需改动）
+        cardpill = { key = "Medicine" },
         -- item 是动态哨兵：main.lua 对 item 状态特殊处理（不读本 key），
         -- 按房间道具质量从 itemQuality.animKeys 动态选择 item0~item4
         item     = { key = "item_auto" },
@@ -241,8 +244,40 @@ local config = {
         boss     = "once",
         half     = "once",
         hurt     = "once",
-        cardpill = "once",
+        pill     = "once",
+        card     = "once",
         item     = "once",
+    },
+
+    -- ---------------------------------------------------------
+    --  桌宠突脸（Popup）：触发指定事件时，桌宠先平滑滑出游戏画面
+    --  （方向可配），随后默认动画以「宽度 = 游戏窗口高度」的等比
+    --  放大尺寸从窗口底部边缘中点平滑滑入至画面正中央，在中央
+    --  播放该事件的动画（放大版），播完后原路从底部退出并滑回
+    --  原位置，恢复常态动画。
+    -- ---------------------------------------------------------
+    popup = {
+        enabled = true,           -- 突脸功能总开关
+        -- 触发事件（可选已有事件）：item0~item4 / hurt / boss / half /
+        -- active / card / pill。itemN = 房间出现 N 质量道具。
+        event = "item4",
+        exitDir = "left",         -- 桌宠移出画面的方向：up / down / left / right
+        moveFrames = 30,          -- 每段平滑移动时长（渲染帧，60帧≈1秒；30=0.5秒）
+        cooldownFrames = 300,     -- 一次突脸结束后的冷却（渲染帧），防止连续事件反复突脸
+    },
+
+    -- ---------------------------------------------------------
+    --  Lost 悲伤常态：角色为 Lost / 堕化Lost 且身上没有圣盾
+    --  （Holy Mantle 效果：圣斗篷道具/圣卡/堕化Lost固有盾）时，
+    --  常态贴图切换为 main_sad.png（与半血悲伤共用，眨眼也用半血档）。
+    --  拿到圣盾后恢复 main.png。
+    -- ---------------------------------------------------------
+    lostSad = {
+        enabled = true,
+        playerTypes = {
+            [PlayerType.PLAYER_THELOST] = true,
+            [PlayerType.PLAYER_THELOST_B] = true,
+        },
     },
 
     -- 半血判定
@@ -274,7 +309,8 @@ local config = {
     -- 每个状态的独立开关
     states = {
         hurt     = true,   -- 受击（火焰/爆炸/激光/尖刺等）
-        cardpill = true,   -- 使用卡牌/药丸
+        pill     = true,   -- 使用药丸（缺 pill 素材时回退 cardpill 动画）
+        card     = true,   -- 使用卡牌（缺 card 素材时回退 cardpill 动画）
         active   = true,   -- 使用主动/副主动道具
         boss     = true,   -- Boss 战
         item     = true,   -- 房间道具质量（item0~item4）

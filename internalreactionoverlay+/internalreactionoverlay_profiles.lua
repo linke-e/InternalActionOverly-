@@ -56,6 +56,17 @@ Profiles.SCHEMA = {
     { key = "hhThreshold",        path = { "halfHealth", "threshold" },        kind = "number" },
     { key = "hhSoulHearts",       path = { "halfHealth", "countSoulHearts" },  kind = "boolean" },
     { key = "hhOneThreshold",     path = { "halfHealth", "oneHealthThreshold" }, kind = "number" },
+
+    -- 突脸（popup）与 Lost 悲伤常态：动画行为类配置，随角色独立保存
+    { key = "popupEnabled",       path = { "popup", "enabled" },               kind = "boolean" },
+    { key = "popupEvent",         path = { "popup", "event" },
+      kind = { "item0", "item1", "item2", "item3", "item4",
+               "hurt", "boss", "half", "active", "card", "pill" } },
+    { key = "popupDir",           path = { "popup", "exitDir" },
+      kind = { "up", "down", "left", "right" } },
+    { key = "popupMoveFrames",    path = { "popup", "moveFrames" },            kind = "number", min = 1 },
+    { key = "popupCooldownFrames", path = { "popup", "cooldownFrames" },       kind = "number", min = 0 },
+    { key = "lostSadEnabled",     path = { "lostSad", "enabled" },             kind = "boolean" },
 }
 
 -- 深拷贝（profile / defaults 均为纯数据表：number/string/boolean + 嵌套表）

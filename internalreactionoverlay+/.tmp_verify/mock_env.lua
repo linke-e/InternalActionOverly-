@@ -1,8 +1,10 @@
 -- ==== 以撒 API mock（仅 .tmp_verify 测试用，不进游戏） ====
--- 提供最小全局面，让 config/profiles/frames/main 四个真文件可加载、可驱动
+-- 提供最小全局面，让 config/profiles/frames/main 四个真文件可加载、可驱动。
+-- 模组目录优先取环境变量 IRO_MODDIR（verify.mjs 注入），否则回退硬编码。
 
--- require 搜索路径指向 mod 根目录（config/profiles/frames 均加载真实文件）
-package.path = "E:/Cache/RemoteStore/Isaac/internalreactionoverlay+/?.lua;" .. package.path
+local MODDIR = (os and os.getenv and os.getenv("IRO_MODDIR"))
+    or "D:/RemoteStorge/InternalActionOverly-/internalreactionoverlay+"
+package.path = MODDIR .. "/?.lua;" .. package.path
 
 Keyboard = {
     KEY_F1 = 301, KEY_F2 = 302, KEY_F3 = 303, KEY_F4 = 304, KEY_F5 = 305,
@@ -30,28 +32,67 @@ ModCallbacks = {
 }
 CallbackPriority = { EARLY = 0 }
 
+-- Holy Mantle 圣盾 null effect 枚举（真实 API 见 IsaacDocs/NullItemEffect）
+NullItemEffect = { ID_HOLY_MANTLE = 4 }
+
+-- ReactionAPI mock：房间道具最高质量由测试变量控制
+_G.__testQuality = nil
+ReactionAPI = {
+    Interface = {
+        cGetBestQuality = function() return _G.__testQuality end,
+    },
+    Visibility = { VISIBLE = 1, ANY = 2 },
+}
+
 Sprite = function()
     return {
         Load = function() end, ReplaceSpritesheet = function() end,
-        LoadGraphics = function() end, Play = function() end,
+        LoadGraphics = function() end, Play = function() end, Update = function() end,
         GetSpriteResolution = function() return { X = 256, Y = 256 } end,
+        Render = function(self, pos)
+            _G.__lastRender = {
+                x = pos.X, y = pos.Y,
+                sx = self.Scale and self.Scale.X, sy = self.Scale and self.Scale.Y,
+            }
+        end,
     }
 end
-Vector = function(x, y) return { X = x, Y = y, Zero = { X = 0, Y = 0 } } end
+-- Vector 需可调用且带静态 Zero（真实 API 的 Vector 是类）；Lua 不允许给
+-- function 赋字段，故用 __call 元方法的 table 模拟
+Vector = setmetatable(
+    { Zero = { X = 0, Y = 0 } },
+    { __call = function(_, x, y) return { X = x or 0, Y = y or 0 } end }
+)
 Color = function(r, g, b, a) return { R = r, G = g, B = b, A = a } end
 Input = { IsButtonTriggered = function() return false end }
 
 Isaac = {
-    DebugString = function(s) print("[log] " .. tostring(s)) end,
+    DebugString = function(s) end,
     GetScreenWidth = function() return 512 end,
     GetScreenHeight = function() return 320 end,
     RenderText = function() end,
     GetTime = function() return 0 end,
 }
 
+-- 可配置玩家桩：__makePlayer{playerType=, hearts=, soul=, mantle=}
+function _G.__makePlayer(o)
+    o = o or {}
+    return {
+        GetPlayerType = function() return o.playerType or 0 end,
+        GetHearts = function() return o.hearts or 6 end,
+        GetSoulHearts = function() return o.soul or 0 end,
+        HasNullEffect = function(_, id)
+            return (o.mantle == true) and id == NullItemEffect.ID_HOLY_MANTLE or false
+        end,
+        Position = { X = 0, Y = 0 },
+        Velocity = { X = 0, Y = 0 },
+    }
+end
+_G.__testPlayer = nil   -- 测试注入；nil = 游戏无玩家（OnRender 早退）
+
 Game = function()
     return {
-        GetPlayer = function() return nil end,
+        GetPlayer = function() return _G.__testPlayer end,
         GetRoom = function()
             return { GetType = function() return 0 end, IsClear = function() return true end }
         end,
