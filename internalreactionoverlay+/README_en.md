@@ -212,7 +212,9 @@ sprite automatically switches to `main_sad.png`, and blinking uses the
 half-health animation (wink1). Getting a shield switches it back to `main.png`
 immediately.
 
-- Detection: `player:HasNullEffect(NullItemEffect.ID_HOLY_MANTLE)`;
+- Detection: `player:HasCollectibleEffect(CollectibleType.COLLECTIBLE_HOLY_MANTLE)`
+  (same source the game itself uses — all three shield sources are this collectible
+  temporary effect, removed when the shield breaks, re-applied per floor);
 - Shares the sprite and blink tier with the half-health sadness (either
   condition enables it);
 - Toggle: `config.lostSad.enabled` (MCM half-health page, per character, on by default);

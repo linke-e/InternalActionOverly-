@@ -32,8 +32,9 @@ ModCallbacks = {
 }
 CallbackPriority = { EARLY = 0 }
 
--- Holy Mantle 圣盾 null effect 枚举（真实 API 见 IsaacDocs/NullItemEffect）
-NullItemEffect = { ID_HOLY_MANTLE = 4 }
+-- 收集品枚举（真源：游戏反编译 Guantol-Lemat/Isaac.LuaDecomps——圣盾以
+-- COLLECTIBLE_HOLY_MANTLE 收集品临时效果维护，检测走 HasCollectibleEffect）
+CollectibleType = { COLLECTIBLE_HOLY_MANTLE = 313 }
 
 -- ReactionAPI mock：房间道具最高质量由测试变量控制
 _G.__testQuality = nil
@@ -74,19 +75,23 @@ Isaac = {
     GetTime = function() return 0 end,
 }
 
--- 可配置玩家桩：__makePlayer{playerType=, hearts=, soul=, mantle=}
+-- 可配置玩家桩：__makePlayer{playerType=, hearts=, soul=, mantle=, noShieldApi=}
 function _G.__makePlayer(o)
     o = o or {}
-    return {
+    local player
+    player = {
         GetPlayerType = function() return o.playerType or 0 end,
         GetHearts = function() return o.hearts or 6 end,
         GetSoulHearts = function() return o.soul or 0 end,
-        HasNullEffect = function(_, id)
-            return (o.mantle == true) and id == NullItemEffect.ID_HOLY_MANTLE or false
-        end,
         Position = { X = 0, Y = 0 },
         Velocity = { X = 0, Y = 0 },
     }
+    if not o.noShieldApi then
+        function player:HasCollectibleEffect(id)
+            return (o.mantle == true) and id == CollectibleType.COLLECTIBLE_HOLY_MANTLE or false
+        end
+    end
+    return player
 end
 _G.__testPlayer = nil   -- 测试注入；nil = 游戏无玩家（OnRender 早退）
 

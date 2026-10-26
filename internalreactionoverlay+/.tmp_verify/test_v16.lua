@@ -229,6 +229,24 @@ do
     eq(m:IsSad(), true, "L6 Lost 无盾 IsSad=true（眨眼走悲伤档）")
     _G.__testPlayer = _G.__makePlayer{ playerType = 0, hearts = 6, mantle = false }
     eq(m:IsSad(), false, "L6 普通满血 IsSad=false")
+
+    -- L7 实测回归（2026-10-26）：游戏内无 NullItemEffect.ID_HOLY_MANTLE 枚举
+    --    曾致检测被跳过恒 false——现走 HasCollectibleEffect(COLLECTIBLE_HOLY_MANTLE)
+    eq(m:ComputeLostSad(_G.__makePlayer{ playerType = PlayerType.PLAYER_THELOST, mantle = false }),
+       true, "L7 无盾 Lost 判悲伤（HasCollectibleEffect 路径）")
+    eq(m:ComputeLostSad(_G.__makePlayer{ playerType = PlayerType.PLAYER_THELOST, mantle = true }),
+       false, "L7 有盾 Lost 判正常")
+    -- 玩家桩无 HasCollectibleEffect 方法（API 异常）：不误判悲伤
+    eq(m:ComputeLostSad(_G.__makePlayer{ playerType = PlayerType.PLAYER_THELOST, noShieldApi = true }),
+       false, "L7 检测方法缺失时跳过不误判")
+    -- 非 Lost 角色（有盾无盾都不判悲伤）
+    eq(m:ComputeLostSad(_G.__makePlayer{ playerType = 0, mantle = false }),
+       false, "L7 非 Lost 角色不触发 Lost 悲伤")
+
+    -- L8 Bug2 回归（2026-10-26）：pill/card 动画键须有 animHold，否则走
+    --    animFps 兜底（60/15=4）导致比 Medicine（18）快 4.5 倍
+    eq(require("internalreactionoverlay_config").animHold.pill, 18, "L8 animHold.pill=18")
+    eq(require("internalreactionoverlay_config").animHold.card, 18, "L8 animHold.card=18")
 end
 
 -- ============================================================

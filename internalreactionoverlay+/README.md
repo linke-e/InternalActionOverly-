@@ -180,7 +180,8 @@ TNT（DAMAGE_TNT）、中毒/燃烧（DAMAGE_POISON_BURN）、塌陷坑洞（DAM
 圣斗篷道具、圣卡、堕化Lost固有盾均计入）时，常态贴图自动切换为
 `main_sad.png`，眨眼也用半血档（wink1）；拿到圣盾后立即恢复 `main.png`。
 
-- 判定：`player:HasNullEffect(NullItemEffect.ID_HOLY_MANTLE)`；
+- 判定：`player:HasCollectibleEffect(CollectibleType.COLLECTIBLE_HOLY_MANTLE)`
+  （与游戏内部同源：三种圣盾来源都是这个收集品临时效果，盾破即移除、进层补回）；
 - 与半血悲伤共用贴图与眨眼档（两者任一成立即悲伤）；
 - 开关：`config.lostSad.enabled`（MCM「半血判定」页，每角色独立，默认开启）；
 - Lost 本就不判半血（游魂类角色），其悲伤只由圣盾决定。

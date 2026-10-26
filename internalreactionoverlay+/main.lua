@@ -511,18 +511,22 @@ end
 -- ---------------------------------------------------------
 --  Lost / 堕化Lost 悲伤判定：角色在 lostSad.playerTypes 中且身上
 --  没有 Holy Mantle 圣盾效果（圣斗篷道具/圣卡/堕化Lost固有盾均计入）
---  时返回 true。API 缺 NullItemEffect 枚举时按「有盾」处理（不误悲伤）。
+--  时返回 true。
+--  圣盾检测用 HasCollectibleEffect(COLLECTIBLE_HOLY_MANTLE)：
+--  游戏内部（反编译 TemporaryEffectsUtils.HasCollectibleEffect）以
+--  COLLECTIBLE_HOLY_MANTLE 临时效果维护盾状态（盾破即移除、进层补回），
+--  三种圣盾来源同一效果。方法不可用时跳过检测（不误判悲伤）。
 -- ---------------------------------------------------------
 function mod:ComputeLostSad(player)
     local ls = config.lostSad
     if not ls or not ls.enabled then return false end
     local okT, pType = pcall(function() return player:GetPlayerType() end)
     if not okT or not (ls.playerTypes and ls.playerTypes[pType]) then return false end
-    local mantleId = (type(NullItemEffect) == "table") and NullItemEffect.ID_HOLY_MANTLE
-    if not mantleId then return false end   -- 无该枚举的旧 API：跳过检测
-    local ok, has = pcall(function() return player:HasNullEffect(mantleId) end)
-    if ok and has then return false end     -- 有圣盾：正常形态
-    return true
+    local cid = (type(CollectibleType) == "table") and CollectibleType.COLLECTIBLE_HOLY_MANTLE
+    if not cid then return false end
+    local ok, has = pcall(function() return player:HasCollectibleEffect(cid) end)
+    if not ok then return false end   -- 方法不可用：不启用悲伤
+    return not has                    -- 有圣盾=正常形态，无圣盾=悲伤
 end
 
 -- 常态贴图目标键：半血或 Lost 无盾 -> sadStatic（main_sad.png），否则 main_static
